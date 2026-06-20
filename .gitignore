@@ -17,6 +17,7 @@ env/
 
 # IDE/editor
 .vscode/
+!.vscode/tasks.json
 *.swp
 *.swo
 
