@@ -34,5 +34,4 @@ ecg_output/
 *.tmp
 
 # Hide agent metadata and local Claude notes
-CLAUDE.md
 agents/
