@@ -1,8 +1,42 @@
-# airflow_processor.py — stateless processing for the Airflow gasp-ratio pipeline.
+# airflow_processor.py — stateless processing for the Airflow pipeline.
 #
-# Two-layer cache design (mirrors HR pipeline):
-#   process_session()       → MFF-derived data; written to pickle cache
-#   apply_analysis_params() → baseline, score, rejection; recomputed every run
+# ── Cache architecture ─────────────────────────────────────────────────────────
+#
+# Layer 1  process_session()       MFF → raw signal (downsampled) + trial metadata
+#                                  Written to pickle. No NK2, no filtering.
+#
+# Layer 2  apply_analysis_params() Everything else:
+#            • NK2 khodadad2018 (or any configured method) on the full session signal
+#            • Epoch cutting at current WIDE_TMIN / WIDE_TMAX
+#            • Baseline, rejection, scoring
+#          Returns (trials_data, traces). Never touches the MFF.
+#
+# What requires FORCE_RELOAD (Layer 1 changes):
+#   AIRFLOW_CHANNEL, CACHE_SFREQ, trigger codes
+#
+# What is free to change in the notebook (Layer 2):
+#   RSP_CLEAN_METHOD, WIDE_TMIN/TMAX, BASELINE_TMIN/TMAX,
+#   RESPONSE_TMIN/TMAX, ANAL_TMIN/TMAX, all rejection gates,
+#   AIRFLOW_SCORE_MAX, USE_SUBJECTIVE_TRIAL_TYPE
+#
+# ── Signal notes ───────────────────────────────────────────────────────────────
+#
+# NK2 method khodadad2018: Butterworth bandpass 0.05–3 Hz, 2nd order.
+# Respiratory content: 0.1–0.5 Hz at rest (12–30 bpm). Running NK2 on the
+# full session (not individual epochs) avoids Butterworth edge-effects — the
+# filter has 20+ seconds of context before the first sample of interest.
+#
+# Cache sampling rate: 25 Hz (default). Nyquist = 12.5 Hz, well above the
+# 3 Hz upper band. scipy.signal.resample_poly applies a Kaiser-window
+# anti-aliasing filter before downsampling. NK2 runs correctly at 25 Hz.
+#
+# Scoring (peak_excursion_normalized):
+#   score = max |RSP_Clean − baseline_mean| in response window
+#           ───────────────────────────────────────────────────
+#           session_breath_amp
+#
+#   session_breath_amp = median of per-trial median(RSP_Amplitude in baseline window)
+#   Denominator is always positive; score is in units of breath amplitudes.
 
 import os
 import re
@@ -12,6 +46,7 @@ import mne
 import neurokit2 as nk
 import numpy as np
 import pandas as pd
+from scipy.signal import resample_poly
 
 import Airflow.airflow_config as cfg
 
@@ -57,7 +92,7 @@ def get_events_from_eeg(raw_eeg):
     for ch_idx, ch_name in enumerate(raw_din.ch_names):
         data      = raw_din.get_data(picks=[ch_idx])[0]
         threshold = np.max(data) * 0.9
-        samps = np.where(data > threshold)[0]
+        samps     = np.where(data > threshold)[0]
         if len(samps) == 0:
             continue
         gaps   = np.where(np.diff(samps) > 1)[0]
@@ -84,255 +119,385 @@ def load_and_classify_ratings(csv_path):
     return df
 
 
-# ── Gasp scoring ───────────────────────────────────────────────────────────────
-
-def score_respiration_gasp(trigger_in_epoch, epoch_clean, ep_peaks, ep_troughs, sfreq,
-                            tmin_baseline, tmax_baseline,
-                            tmin_response, tmax_response):
-    """
-    Gasp ratio = abs(response amplitude / baseline amplitude).
-
-    All indices are relative to the start of epoch_clean.
-    trigger_in_epoch = sample index within the epoch where t=0 (the startle).
-    Amplitude = peak-to-trough range; falls back to max-min if no peaks/troughs.
-    Returns 1.0 on any failure.
-    """
-    try:
-        n          = len(epoch_clean)
-        base_start = max(0, trigger_in_epoch + int(tmin_baseline * sfreq))
-        base_end   = min(n, trigger_in_epoch + int(tmax_baseline * sfreq))
-        resp_start = max(0, trigger_in_epoch + int(tmin_response * sfreq))
-        resp_end   = min(n, trigger_in_epoch + int(tmax_response * sfreq))
-
-        bl_peaks   = [p for p in ep_peaks   if base_start <= p <= base_end]
-        bl_troughs = [t for t in ep_troughs if base_start <= t <= base_end]
-        if bl_peaks and bl_troughs:
-            baseline_amp = (np.mean(epoch_clean[bl_peaks])
-                            - np.mean(epoch_clean[bl_troughs]))
-        else:
-            w = epoch_clean[base_start:base_end]
-            baseline_amp = float(np.max(w) - np.min(w)) if w.size else 0.0
-
-        rs_peaks   = [p for p in ep_peaks   if resp_start <= p <= resp_end]
-        rs_troughs = [t for t in ep_troughs if resp_start <= t <= resp_end]
-        if rs_peaks and rs_troughs:
-            gasp_amp = epoch_clean[rs_peaks[0]] - epoch_clean[rs_troughs[0]]
-        else:
-            w = epoch_clean[resp_start:resp_end]
-            gasp_amp = float(np.max(w) - np.min(w)) if w.size else 0.0
-
-        return abs(gasp_amp / baseline_amp) if baseline_amp != 0 else 1.0
-
-    except Exception:
-        return 1.0
-
-
 # ── Layer 1: MFF extraction (cache boundary) ──────────────────────────────────
 
 def process_session(mff_path, ratings_df, channel=None, config=None):
     """
-    Load one MFF session, run NeuroKit2 on the Airflow channel, extract
-    per-trial wide epochs with epoch-relative peak/trough indices.
+    Load one MFF session, extract the raw Airflow channel, downsample it,
+    and store trigger positions + CSV metadata.
 
-    CACHE BOUNDARY: output is written to pickle. Baseline, score, and
-    rejection are NOT computed here — see apply_analysis_params().
+    CACHE BOUNDARY: no NK2, no filtering, no epoch cutting. Output is written
+    to pickle and represents pure Layer 1 data. All signal processing lives
+    in apply_analysis_params() so it can be reconfigured without re-reading MFFs.
 
-    Returns (trials, trace) or (None, None) on failure.
-    trace = {'signal', 'sfreq', 'startle_samps_sec'} for session timecourse.
+    Downsampling:
+      The raw signal is anti-aliased (Kaiser window) and stored at CACHE_SFREQ Hz
+      (default 25 Hz). Nyquist = 12.5 Hz — well above the 3 Hz respiratory content.
+      Trigger positions are converted to the downsampled time base.
+
+    Returns a session dict or None on failure:
+      {
+        'raw_signal'  : float32 ndarray  (full session, CACHE_SFREQ Hz)
+        'sfreq'       : float            (CACHE_SFREQ, e.g. 25.0)
+        'sfreq_orig'  : float            (original MFF sample rate, for reference)
+        'channel'     : str
+        'startle_samps': int64 ndarray   (session-relative, CACHE_SFREQ domain)
+        'trials_meta' : list of dicts    (one per trial; no signal data)
+      }
     """
     if config is None:
         config = cfg
     if channel is None:
         channel = config.AIRFLOW_CHANNEL
 
+    cache_sfreq = getattr(config, "CACHE_SFREQ", 25.0)
     print(f"    Loading {os.path.basename(mff_path)} (channel={channel}) ...")
+
     try:
         raw = mne.io.read_raw_egi(mff_path, preload=True, verbose=False,
                                   events_as_annotations=False)
     except Exception as e:
         print(f"    [!] Cannot read MFF ({e}) — skipping")
-        return None, None
-    sfreq = raw.info["sfreq"]
+        return None
+    sfreq_orig = raw.info["sfreq"]
 
     events_df   = get_events_from_eeg(raw)
     start_samps = events_df[events_df["Channel"] == f"D{config.TRIGGER_SESSION_START}"]["Sample"].values
     end_samps   = events_df[events_df["Channel"] == f"D{config.TRIGGER_SESSION_END}"]["Sample"].values
     if not len(start_samps) or not len(end_samps):
         print("    [!] Task boundaries not found — skipping")
-        return None, None
+        return None
 
-    raw.crop(tmin=start_samps[0] / sfreq, tmax=end_samps[-1] / sfreq)
+    raw.crop(tmin=start_samps[0] / sfreq_orig, tmax=end_samps[-1] / sfreq_orig)
 
     if channel not in raw.ch_names:
         print(f"    [!] Channel {channel!r} not found — skipping")
-        return None, None
+        return None
 
-    raw_channel = raw.copy().pick([channel]).get_data()[0]
+    raw_channel = raw.copy().pick([channel]).get_data()[0]  # full resolution
 
-    try:
-        rsp_signals, _ = nk.rsp_process(raw_channel, sampling_rate=int(sfreq))
-    except Exception as exc:
-        print(f"    [!] nk.rsp_process() failed: {exc}")
-        return None, None
-
-    if "RSP_Clean" not in rsp_signals.columns:
-        print("    [!] NeuroKit2 output missing RSP_Clean")
-        return None, None
-
-    clean_signal = rsp_signals["RSP_Clean"].to_numpy()
-    zeros        = np.zeros(len(clean_signal))
-    peaks   = np.flatnonzero(rsp_signals.get("RSP_Peaks",   pd.Series(zeros)).to_numpy())
-    troughs = np.flatnonzero(rsp_signals.get("RSP_Troughs", pd.Series(zeros)).to_numpy())
-
+    # Trigger positions on the cropped recording
     events_df     = get_events_from_eeg(raw)
     startle_samps = events_df[events_df["Channel"] == f"D{config.TRIGGER_STARTLE}"]["Sample"].values
     print(f"    {len(startle_samps)} startle events found.")
 
+    # Align to CSV
     n_use         = min(len(startle_samps), len(ratings_df))
     startle_samps = startle_samps[:n_use]
     ratings_df    = ratings_df.iloc[:n_use].reset_index(drop=True)
 
-    wide_n     = int((config.WIDE_TMAX - config.WIDE_TMIN) * sfreq)
-    times_wide = np.linspace(config.WIDE_TMIN, config.WIDE_TMAX, wide_n, endpoint=False)
+    # Anti-alias and downsample
+    down = max(1, int(round(sfreq_orig / cache_sfreq)))
+    if down > 1:
+        raw_ds   = resample_poly(raw_channel.astype(np.float64), 1, down).astype(np.float32)
+        sfreq_ds = sfreq_orig / down
+        samps_ds = np.round(startle_samps / down).astype(np.int64)
+    else:
+        raw_ds   = raw_channel.astype(np.float32)
+        sfreq_ds = sfreq_orig
+        samps_ds = startle_samps.copy().astype(np.int64)
 
-    results = []
-    for i, s_idx in enumerate(startle_samps):
-        t0 = int(s_idx + config.WIDE_TMIN * sfreq)
-        t1 = t0 + wide_n
-        if t0 < 0 or t1 > len(clean_signal):
-            continue
-
-        ep_raw   = raw_channel[t0:t1]
-        ep_clean = clean_signal[t0:t1]
-
-        ep_peaks   = np.array([p - t0 for p in peaks   if t0 <= p < t1])
-        ep_troughs = np.array([t - t0 for t in troughs if t0 <= t < t1])
-
-        row     = ratings_df.iloc[i]
-        img_col = next((c for c in ["image", "image_name", "image_type"]
-                        if c in row.index), None)
-
-        results.append({
-            "epoch_raw_wide":   ep_raw.astype(np.float32),
-            "epoch_clean_wide": ep_clean.astype(np.float32),
-            "ep_peaks":         ep_peaks,
-            "ep_troughs":       ep_troughs,
-            "times_wide":       times_wide,
-            "sfreq":            float(sfreq),
-            "channel":          channel,
+    # Per-trial metadata (CSV; no signal)
+    # image_type must come first: the CSV also has image/image_name filename columns,
+    # and storing a filename in image_detail would cause label resolution to silently
+    # fall back to subjective_label even when USE_SUBJECTIVE_TRIAL_TYPE = False.
+    trials_meta = []
+    for _, row in ratings_df.iterrows():
+        img_col = next((c for c in ["image_type", "image", "image_name"]
+                        if c in row.index and not pd.isna(row.get(c))), None)
+        img_type_val = (str(row["image_type"]).lower().strip()
+                        if "image_type" in row.index and not pd.isna(row.get("image_type"))
+                        else "")
+        trials_meta.append({
             "subjective_label": int(row["subjective_label"]),
-            "label":            int(row["subjective_label"]),
             "valence":          float(row["valenceRating"]),
             "arousal":          float(row["arousalRating"]),
             "image_detail":     str(row.get(img_col, "?")) if img_col else "?",
-            # Filled by apply_analysis_params — not persisted in pickle
-            "baseline_mean":    None,
-            "score":            None,
-            "rejected":         None,
-            "epoch_anal":       None,
-            "times_anal":       None,
+            "image_type":       img_type_val,
         })
 
-    trace = {
-        "signal":            clean_signal.astype(np.float32),
-        "sfreq":             float(sfreq),
-        "startle_samps_sec": startle_samps / sfreq,
+    return {
+        "raw_signal":   raw_ds,
+        "sfreq":        float(sfreq_ds),
+        "sfreq_orig":   float(sfreq_orig),
+        "channel":      channel,
+        "startle_samps": samps_ds,
+        "trials_meta":  trials_meta,
     }
-    return results, trace
 
 
-# ── Layer 2: analysis parameters (fast, no MFF access) ────────────────────────
+# ── Layer 2: analysis (fast, no MFF access) ───────────────────────────────────
 
-def apply_analysis_params(subj_data_dict, config):
+def apply_analysis_params(sessions_cache, config):
     """
-    Recompute baseline, gasp score, rejection, and trimmed epoch for every trial.
-    Called unconditionally on every run regardless of cache state.
+    Run NK2 + epoch cutting + baseline + rejection + scoring on every session.
+    Takes the raw sessions cache; returns (trials_data, traces).
 
-    Changing BASELINE_TMIN/TMAX, RESPONSE_TMIN/TMAX, rejection thresholds,
-    or USE_SUBJECTIVE_TRIAL_TYPE takes effect immediately without reloading MFF.
+    trials_data : {subj: {sess_key: [list of trial dicts]}}
+                  Same shape expected by all notebook cells and plot functions.
 
-    Rejection (two gates):
-      1. Z-score on baseline std: if the baseline window is unusually variable
-         relative to other trials in the session, the signal was likely unstable.
-         Controlled by AIRFLOW_Z_SCORE_THRESHOLD (None = disabled).
-      2. Score ceiling: if gasp_ratio exceeds AIRFLOW_SCORE_MAX the trial is
-         almost certainly an artifact. Controlled by AIRFLOW_SCORE_MAX (None = disabled).
+    traces      : {subj: {sess_key: {'signal', 'sfreq', 'startle_samps_sec'}}}
+                  NK2-filtered session signal for the timecourse plot.
+
+    Rejection gates:
+      nan_baseline   : baseline window has no valid samples
+      noisy_baseline : baseline std > AIRFLOW_Z_SCORE_THRESHOLD SDs above session median
+      amplitude_spike: max|baseline window| > AIRFLOW_AMPLITUDE_Z_THRESHOLD robust-SDs (median/MAD)
+      flat_signal    : baseline std < AIRFLOW_MIN_STD_RATIO × session median std
+      rate_artifact  : NK2 RSP_Rate anywhere in epoch > RSP_RATE_ARTIFACT_THRESHOLD bpm
+      score_ceiling  : normalised score > AIRFLOW_SCORE_MAX
+
+    Scoring (peak_excursion_normalized):
+      max |RSP_Clean − baseline_mean| in [RESPONSE_TMIN, RESPONSE_TMAX]
+      ────────────────────────────────────────────────────────────────────
+      session_breath_amp  (median of per-trial median RSP_Amplitude in baseline window)
     """
-    for subj, sessions in subj_data_dict.items():
-        for sess_key, trials in sessions.items():
-            if not trials:
+    method = getattr(config, "RSP_CLEAN_METHOD", "khodadad2018")
+
+    trials_data = {}
+    traces      = {}
+
+    for subj, sess_dict in sorted(sessions_cache.items()):
+        trials_data[subj] = {}
+        traces[subj]      = {}
+
+        for sess_key, sess in sess_dict.items():
+
+            # ── Old format: sess is already a list of trial dicts ─────────────
+            if isinstance(sess, list):
+                trials = [dict(t) for t in sess]
+                for t in trials:
+                    t.setdefault("rsp_rate_wide", None)
+                    t.setdefault("image_type", "")
+                    # Inject breath-amplitude proxy from baseline window range
+                    # when rsp_amplitude_wide is absent (old cache pre-dates NK2 amplitude)
+                    if t.get("rsp_amplitude_wide") is None:
+                        tw = t["times_wide"]
+                        ep = t["epoch_clean_wide"]
+                        pre = (tw >= config.BASELINE_TMIN) & (tw < config.BASELINE_TMAX)
+                        amp = float(np.max(ep[pre]) - np.min(ep[pre])) if np.any(pre) else 0.0
+                        t["rsp_amplitude_wide"] = np.full(len(ep), amp, dtype=np.float32)
+                    # Reset analysis fields so current config is applied
+                    t["baseline_mean"] = None
+                    t["score"]         = None
+                    t["rejected"]      = None
+                    t["rejection_reason"] = ""
+                    t["epoch_anal"]    = None
+                    t["times_anal"]    = None
+                _run_analysis(trials, config)
+                trials_data[subj][sess_key] = trials
+                traces[subj][sess_key]      = {}
                 continue
 
-            # Pass 1 — label resolution, baseline, collect session stds
-            bl_stds   = []
-            pre_masks = []
-            for t in trials:
-                if "subjective_label" not in t:
-                    t["subjective_label"] = t.get("label", 2)
+            raw_sig       = sess["raw_signal"]
+            sfreq         = sess["sfreq"]
+            startle_samps = sess["startle_samps"]
+            trials_meta   = sess["trials_meta"]
 
-                if config.USE_SUBJECTIVE_TRIAL_TYPE:
-                    t["label"] = t["subjective_label"]
-                else:
-                    img_type = str(t.get("image_detail", t.get("image_type", ""))).lower().strip()
-                    if "negative" in img_type or img_type == "1":
-                        t["label"] = 1
-                    elif "neutral" in img_type or img_type == "2":
-                        t["label"] = 2
-                    else:
-                        t["label"] = t["subjective_label"]
+            # ── NK2 on full session signal ────────────────────────────────────
+            try:
+                rsp_signals, _ = nk.rsp_process(raw_sig, sampling_rate=int(round(sfreq)),
+                                                  method=method)
+            except Exception as exc:
+                print(f"  [!] NK2 failed for {subj} {sess_key}: {exc} — skipping")
+                trials_data[subj][sess_key] = []
+                continue
 
-                tw = t["times_wide"]
-                ep = t["epoch_clean_wide"]
-                pre_mask = (tw >= config.BASELINE_TMIN) & (tw < config.BASELINE_TMAX)
-                pre_masks.append(pre_mask)
+            clean   = rsp_signals["RSP_Clean"].to_numpy().astype(np.float32)
+            nan_col = np.full(len(clean), np.nan, dtype=np.float32)
+            rsp_amp  = rsp_signals["RSP_Amplitude"].to_numpy().astype(np.float32) \
+                       if "RSP_Amplitude" in rsp_signals.columns else nan_col.copy()
+            rsp_rate = rsp_signals["RSP_Rate"].to_numpy().astype(np.float32) \
+                       if "RSP_Rate" in rsp_signals.columns else nan_col.copy()
+            zeros    = np.zeros(len(clean))
+            peaks    = np.flatnonzero(rsp_signals.get("RSP_Peaks",   pd.Series(zeros)).to_numpy())
+            troughs  = np.flatnonzero(rsp_signals.get("RSP_Troughs", pd.Series(zeros)).to_numpy())
 
-                if np.any(pre_mask):
-                    bm = float(np.mean(ep[pre_mask]))
-                    bs = float(np.std(ep[pre_mask]))
-                else:
-                    bm = bs = np.nan
-                t["baseline_mean"] = bm
-                bl_stds.append(bs)
+            # Store filtered signal for timecourse visualisation
+            traces[subj][sess_key] = {
+                "signal":            clean,
+                "sfreq":             sfreq,
+                "startle_samps_sec": startle_samps / sfreq,
+            }
 
-            sess_std_median = float(np.nanmedian(bl_stds))
-            sess_std_std    = float(np.nanstd(bl_stds))
+            # ── Cut wide epochs ───────────────────────────────────────────────
+            wide_n     = int((config.WIDE_TMAX - config.WIDE_TMIN) * sfreq)
+            times_wide = np.linspace(config.WIDE_TMIN, config.WIDE_TMAX,
+                                     wide_n, endpoint=False).astype(np.float32)
 
-            # Pass 2 — rejection, score, trim
-            for t, pre_mask in zip(trials, pre_masks):
-                tw      = t["times_wide"]
-                ep      = t["epoch_clean_wide"]
-                bm      = t["baseline_mean"]
-                peaks   = t["ep_peaks"]
-                troughs = t["ep_troughs"]
-                sfreq   = t["sfreq"]
-                bs = float(np.std(ep[pre_mask])) if np.any(pre_mask) else np.nan
+            trials = []
+            for star_samp, meta in zip(startle_samps, trials_meta):
+                t0 = int(star_samp + config.WIDE_TMIN * sfreq)
+                t1 = t0 + wide_n
+                if t0 < 0 or t1 > len(clean):
+                    continue
 
-                z_reject = False
-                threshold = getattr(config, "AIRFLOW_Z_SCORE_THRESHOLD", None)
-                if threshold is not None and not np.isnan(bs) and sess_std_std > 0:
-                    z = (bs - sess_std_median) / sess_std_std
-                    z_reject = bool(z > threshold)
+                ep_peaks   = np.array([p - t0 for p in peaks   if t0 <= p < t1])
+                ep_troughs = np.array([t - t0 for t in troughs  if t0 <= t < t1])
 
-                t["rejected"] = bool(np.isnan(bm) or z_reject)
+                trial = {
+                    "epoch_raw_wide":     raw_sig[t0:t1].copy(),
+                    "epoch_clean_wide":   clean[t0:t1].copy(),
+                    "rsp_amplitude_wide": rsp_amp[t0:t1].copy(),
+                    "rsp_rate_wide":      rsp_rate[t0:t1].copy(),
+                    "ep_peaks":           ep_peaks,
+                    "ep_troughs":         ep_troughs,
+                    "times_wide":         times_wide,
+                    "sfreq":              sfreq,
+                    "channel":            sess["channel"],
+                    # CSV metadata
+                    "subjective_label":   meta["subjective_label"],
+                    "label":              meta["subjective_label"],
+                    "valence":            meta["valence"],
+                    "arousal":            meta["arousal"],
+                    "image_detail":       meta["image_detail"],
+                    "image_type":         meta.get("image_type", ""),
+                    # Filled below
+                    "baseline_mean":      None,
+                    "score":              None,
+                    "rejected":           None,
+                    "rejection_reason":   "",
+                    "epoch_anal":         None,
+                    "times_anal":         None,
+                }
+                trials.append(trial)
 
-                anal_mask       = (tw >= config.ANAL_TMIN) & (tw < config.ANAL_TMAX)
-                t["epoch_anal"] = ep[anal_mask]
-                t["times_anal"] = tw[anal_mask]
+            # ── Label resolution and analysis ─────────────────────────────────
+            _run_analysis(trials, config)
+            trials_data[subj][sess_key] = trials
 
-                if t["rejected"]:
-                    t["score"] = np.nan
-                elif config.PERFORM_SCORING:
-                    trigger_in_epoch = int(-config.WIDE_TMIN * sfreq)
-                    t["score"] = score_respiration_gasp(
-                        trigger_in_epoch, ep, peaks, troughs, sfreq,
-                        config.BASELINE_TMIN, config.BASELINE_TMAX,
-                        config.RESPONSE_TMIN, config.RESPONSE_TMAX,
-                    )
-                else:
-                    t["score"] = np.nan
+    return trials_data, traces
 
-                score_max = getattr(config, "AIRFLOW_SCORE_MAX", None)
-                if score_max is not None and not t["rejected"] and not np.isnan(t["score"]):
-                    if t["score"] > score_max:
-                        t["rejected"] = True
-                        t["score"]    = np.nan
+
+# ── Internal: label + baseline + rejection + scoring ──────────────────────────
+
+def _run_analysis(trials, config):
+    """Resolve labels, compute baseline stats, apply all rejection gates, score."""
+    if not trials:
+        return
+
+    # Pass 1 — labels, baseline, session-level statistics
+    bl_stds       = []
+    pre_masks     = []
+    epoch_maxabs  = []
+    amp_baselines = []
+
+    for t in trials:
+        # Label from image_type column (or subjective if ambiguous)
+        if config.USE_SUBJECTIVE_TRIAL_TYPE:
+            t["label"] = t["subjective_label"]
+        else:
+            img = (str(t.get("image_type") or t.get("image_detail", ""))).lower().strip()
+            if "negative" in img or img == "1":
+                t["label"] = 1
+            elif "neutral" in img or img == "2":
+                t["label"] = 2
+            else:
+                t["label"] = t["subjective_label"]
+
+        tw       = t["times_wide"]
+        ep       = t["epoch_clean_wide"]
+        pre_mask = (tw >= config.BASELINE_TMIN) & (tw < config.BASELINE_TMAX)
+        pre_masks.append(pre_mask)
+
+        if np.any(pre_mask):
+            bm = float(np.mean(ep[pre_mask]))
+            bs = float(np.std(ep[pre_mask]))
+        else:
+            bm = bs = np.nan
+        t["baseline_mean"] = bm
+        bl_stds.append(bs)
+        # Amplitude spike check restricted to baseline window only.
+        # A spike at t>0 (response or post-response) is irrelevant to score validity —
+        # we were rejecting valid startle gasps and post-trial movements.
+        bl_ep = ep[pre_mask] if np.any(pre_mask) else ep
+        epoch_maxabs.append(float(np.nanmax(np.abs(bl_ep))))
+
+        # RSP_Amplitude in baseline window → session breath amplitude
+        ep_amp = t.get("rsp_amplitude_wide")
+        if ep_amp is not None and np.any(pre_mask):
+            vals  = ep_amp[pre_mask]
+            valid = vals[np.isfinite(vals) & (vals > 0)]
+            if len(valid) > 0:
+                amp_baselines.append(float(np.median(valid)))
+
+    sess_std_median    = float(np.nanmedian(bl_stds))
+    sess_std_std       = float(np.nanstd(bl_stds))
+    sess_amp_median    = float(np.nanmedian(epoch_maxabs))
+    _diffs             = np.abs(np.array(epoch_maxabs) - sess_amp_median)
+    sess_amp_mad       = float(np.nanmedian(_diffs))
+    session_breath_amp = float(np.nanmedian(amp_baselines)) if amp_baselines else np.nan
+
+    # Pass 2 — rejection, score, epoch trim
+    for t, pre_mask, max_abs in zip(trials, pre_masks, epoch_maxabs):
+        tw = t["times_wide"]
+        ep = t["epoch_clean_wide"]
+        bm = t["baseline_mean"]
+        bs = float(np.std(ep[pre_mask])) if np.any(pre_mask) else np.nan
+
+        # Gate 1: baseline noise z-score
+        z_reject  = False
+        threshold = getattr(config, "AIRFLOW_Z_SCORE_THRESHOLD", None)
+        if threshold is not None and not np.isnan(bs) and sess_std_std > 0:
+            z_reject = bool((bs - sess_std_median) / sess_std_std > threshold)
+
+        # Gate 2: amplitude spike (robust z-score: median/MAD)
+        amp_reject    = False
+        amp_threshold = getattr(config, "AIRFLOW_AMPLITUDE_Z_THRESHOLD", None)
+        if amp_threshold is not None and sess_amp_mad > 0 and not np.isnan(max_abs):
+            z_amp      = (max_abs - sess_amp_median) / (1.4826 * sess_amp_mad)
+            amp_reject = bool(z_amp > amp_threshold)
+
+        # Gate 3: flat signal
+        flat_reject   = False
+        min_std_ratio = getattr(config, "AIRFLOW_MIN_STD_RATIO", None)
+        if min_std_ratio is not None and not np.isnan(bs) and sess_std_median > 0:
+            flat_reject = bool(bs < min_std_ratio * sess_std_median)
+
+        # Gate 4: physiological RSP_Rate ceiling
+        rate_reject    = False
+        rate_threshold = getattr(config, "RSP_RATE_ARTIFACT_THRESHOLD", None)
+        if rate_threshold is not None:
+            ep_rate     = t.get("rsp_rate_wide")
+            valid_rates = ep_rate[np.isfinite(ep_rate)] if ep_rate is not None else np.array([])
+            if len(valid_rates) > 0:
+                rate_reject = bool(float(np.max(valid_rates)) > rate_threshold)
+
+        reasons = []
+        if np.isnan(bm): reasons.append("nan_baseline")
+        if z_reject:     reasons.append("noisy_baseline")
+        if amp_reject:   reasons.append("amplitude_spike")
+        if flat_reject:  reasons.append("flat_signal")
+        if rate_reject:  reasons.append("rate_artifact")
+
+        t["rejected"]         = bool(reasons)
+        t["rejection_reason"] = ", ".join(reasons) if reasons else ""
+
+        anal_mask       = (tw >= config.ANAL_TMIN) & (tw < config.ANAL_TMAX)
+        t["epoch_anal"] = ep[anal_mask]
+        t["times_anal"] = tw[anal_mask]
+
+        # Score: max absolute excursion / session breath amplitude
+        if t["rejected"] or not config.PERFORM_SCORING:
+            t["score"] = np.nan
+        else:
+            resp_mask = (tw >= config.RESPONSE_TMIN) & (tw < config.RESPONSE_TMAX)
+            if (np.any(resp_mask)
+                    and not np.isnan(bm)
+                    and not np.isnan(session_breath_amp)
+                    and session_breath_amp > 0):
+                excursion  = float(np.max(np.abs(ep[resp_mask] - bm)))
+                t["score"] = excursion / session_breath_amp
+            else:
+                t["score"] = np.nan
+
+        # Gate 5: score ceiling (after scoring)
+        score_max = getattr(config, "AIRFLOW_SCORE_MAX", None)
+        if (score_max is not None
+                and not t["rejected"]
+                and t["score"] is not None
+                and not np.isnan(t["score"])
+                and t["score"] > score_max):
+            t["rejected"]         = True
+            t["score"]            = np.nan
+            t["rejection_reason"] = "score_ceiling"

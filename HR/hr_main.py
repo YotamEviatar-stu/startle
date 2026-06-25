@@ -36,14 +36,12 @@ def load_cache():
         try:
             with open(CACHE_FILE, "rb") as f:
                 data = pickle.load(f)
-            # Migrate old flat format {subj: {sess_key: [trials]}}
-            if isinstance(data, dict) and "trials" not in data:
-                print("  Cache is pre-migration format — rebuilding.")
-                return {"trials": {}, "traces": {}}
-            return data
+            if isinstance(data, dict) and "sessions" in data:
+                return data
+            print("  Cache is pre-refactor format — rebuilding.")
         except Exception as e:
             print(f"  [!] Cache load failed ({e}) — rebuilding.")
-    return {"trials": {}, "traces": {}}
+    return {"sessions": {}}
 
 
 def save_cache(data):
@@ -1218,10 +1216,9 @@ def main():
     if config.SUBJECT_FILTER:
         subjects = [s for s in subjects if s in config.SUBJECT_FILTER]
 
-    cache         = load_cache()
-    trials_cache  = cache.setdefault("trials", {})
-    traces_cache  = cache.setdefault("traces", {})
-    changed       = False
+    cache          = load_cache()
+    sessions_cache = cache.setdefault("sessions", {})
+    changed        = False
 
     for subj in subjects:
         subj_path      = os.path.join(config.RAW_DATA_DIR, subj)
@@ -1232,14 +1229,12 @@ def main():
             continue
 
         print(f"\n{subj}")
-        trials_cache.setdefault(subj, {})
-        traces_cache.setdefault(subj, {})
+        sessions_cache.setdefault(subj, {})
 
         for sess_key, sess_cfg in config.SESSION_MAP.items():
-            have_trials = sess_key in trials_cache[subj]
-            have_trace  = sess_key in traces_cache[subj]
-            if have_trials and have_trace and not config.FORCE_RELOAD:
-                print(f"  {sess_key}: using cache ({len(trials_cache[subj][sess_key])} trials)")
+            if sess_key in sessions_cache[subj] and not config.FORCE_RELOAD:
+                n = len(sessions_cache[subj][sess_key].get("trials_meta", []))
+                print(f"  {sess_key}: using cache ({n} trials)")
                 continue
 
             csv_path = processor.find_csv_by_suffix(startle_folder, sess_cfg["csv_suffix"])
@@ -1248,41 +1243,41 @@ def main():
                 print(f"  [!] Missing files for {subj} {sess_key}")
                 continue
 
-            ratings_df      = processor.load_and_classify_ratings(csv_path)
-            trials, trace   = processor.process_session(
+            ratings_df  = processor.load_and_classify_ratings(csv_path)
+            session, _  = processor.process_session(
                 mff_path, ratings_df, config.HR_CHANNEL, config)
-            trials_cache[subj][sess_key] = trials or []
-            if trace is not None:
-                traces_cache[subj][sess_key] = trace
-            changed = True
+            if session is not None:
+                sessions_cache[subj][sess_key] = session
+                changed = True
 
     if changed:
-        save_cache({"trials": trials_cache, "traces": traces_cache})
+        save_cache({"sessions": sessions_cache})
 
-    processor.apply_analysis_params(trials_cache, config)
+    print("\nRunning Layer 2 analysis (epoch cutting + baseline + scoring) ...")
+    trials_data, traces_cache = processor.apply_analysis_params(sessions_cache, config)
 
-    save_trial_csv(trials_cache, config.OUTPUT_DIR)
-    plot_raw_sessions(trials_cache, traces_cache, config.OUTPUT_DIR)
-    plot_session_timecourses(trials_cache, config.OUTPUT_DIR)
-    plot_trial_scores_per_subject(trials_cache, config.OUTPUT_DIR)
-    plot_subject_average_timecourse(trials_cache, config.OUTPUT_DIR)
-    plot_event_windows(trials_cache, config.OUTPUT_DIR)
-    plot_group_average_timecourse(trials_cache, config.OUTPUT_DIR)
-    plot_group_boxplot(trials_cache, config.OUTPUT_DIR)
-    plot_group_ratio_boxplot(trials_cache, config.OUTPUT_DIR)
-    plot_group_session_comparison(trials_cache, config.OUTPUT_DIR)
-    plot_group_eve_mor_ratio(trials_cache, config.OUTPUT_DIR)
-    plot_group_overall_eve_vs_mor(trials_cache, config.OUTPUT_DIR)
-    plot_group_overall_ratio(trials_cache, config.OUTPUT_DIR)
-    plot_group_overall_timecourse(trials_cache, config.OUTPUT_DIR)
-    plot_eve_vs_mor_boxplot(trials_cache, config.OUTPUT_DIR)
-    plot_neg_vs_neu_boxplot(trials_cache, config.OUTPUT_DIR)
-    plot_stai_correlations(trials_cache, config.OUTPUT_DIR)
+    save_trial_csv(trials_data, config.OUTPUT_DIR)
+    plot_raw_sessions(trials_data, traces_cache, config.OUTPUT_DIR)
+    plot_session_timecourses(trials_data, config.OUTPUT_DIR)
+    plot_trial_scores_per_subject(trials_data, config.OUTPUT_DIR)
+    plot_subject_average_timecourse(trials_data, config.OUTPUT_DIR)
+    plot_event_windows(trials_data, config.OUTPUT_DIR)
+    plot_group_average_timecourse(trials_data, config.OUTPUT_DIR)
+    plot_group_boxplot(trials_data, config.OUTPUT_DIR)
+    plot_group_ratio_boxplot(trials_data, config.OUTPUT_DIR)
+    plot_group_session_comparison(trials_data, config.OUTPUT_DIR)
+    plot_group_eve_mor_ratio(trials_data, config.OUTPUT_DIR)
+    plot_group_overall_eve_vs_mor(trials_data, config.OUTPUT_DIR)
+    plot_group_overall_ratio(trials_data, config.OUTPUT_DIR)
+    plot_group_overall_timecourse(trials_data, config.OUTPUT_DIR)
+    plot_eve_vs_mor_boxplot(trials_data, config.OUTPUT_DIR)
+    plot_neg_vs_neu_boxplot(trials_data, config.OUTPUT_DIR)
+    plot_stai_correlations(trials_data, config.OUTPUT_DIR)
     plot_subjective_negative_percentage(config.RAW_DATA_DIR, config.OUTPUT_DIR)
-    plot_review_trials(trials_cache, config.OUTPUT_DIR)
+    plot_review_trials(trials_data, config.OUTPUT_DIR)
 
     print()
-    for subj, sessions in sorted(trials_cache.items()):
+    for subj, sessions in sorted(trials_data.items()):
         for sess_key, trials in sessions.items():
             if not trials:
                 continue

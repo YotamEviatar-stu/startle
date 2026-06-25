@@ -50,9 +50,16 @@ else:
 assert os.path.exists(cache_path), f"Cache not found: {cache_path}\nRun the pipeline once first."
 with open(cache_path, "rb") as f:
     data = pickle.load(f)
-trials_cache = data["trials"]
+sessions_key = "sessions" if "sessions" in data else "trials"
+raw = data[sessions_key]
 
-processor.apply_analysis_params(trials_cache, config)
+# Detect old cache format: {subj: {sess_key: [list_of_trial_dicts]}}
+# The processor handles re-scoring from pre-cut epochs; no raw signal needed.
+_first_sess = next(iter(next(iter(raw.values())).values()))
+if isinstance(_first_sess, list):
+    print("[NOTE] Cache is in old-epoch format — re-scoring from stored epochs with current config.")
+    print("[NOTE] Rebuild cache (FORCE_RELOAD=True, drive connected) for full NK2 re-processing.\n")
+trials_cache, _ = processor.apply_analysis_params(raw, config)
 
 # ── Compute metrics ───────────────────────────────────────────────────────────
 conds = [("eve", 1), ("eve", 2), ("mor", 1), ("mor", 2)]

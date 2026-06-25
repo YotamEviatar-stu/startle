@@ -3,9 +3,10 @@ HR Pipeline Configuration
 ===================================
 All tunable parameters. Edit here — do not touch processor or main.
 
-Unlike the ECG pipeline, there is no cache-invalidation distinction:
-HR (SpO2-Pulse channel) needs no filtering, so every parameter
-can be changed freely without reprocessing the MFF files.
+Two-layer cache boundary:
+  Layer 1 (requires FORCE_RELOAD): HR_CHANNEL, HR_CACHE_SFREQ, trigger codes.
+  Layer 2 (free to tune anytime):  everything else — WIDE_TMIN/TMAX, BASELINE_*,
+    SCORE_*, HR_MIN/MAX_BPM, HR_Z_SCORE_THRESHOLD, FLAT_*, SPIKE_*, SCORE_MAX/MIN_PCT.
 """
 
 import os
@@ -33,23 +34,32 @@ TRIGGER_SESSION_START = 101   # D101: paradigm start; recording cropped here
 TRIGGER_SESSION_END   = 124   # D124: paradigm end
 TRIGGER_STARTLE       = 110   # D110: startle probe — t=0 for all epochs
 
-# ── Epoch windows (seconds, relative to D110) ─────────────────────────────────
-WIDE_TMIN = -10.0   # full epoch cut window — stored in cache
-WIDE_TMAX =  15.0
-ANAL_TMIN =  -5.0   # analysis / plot window (subset of WIDE) — change freely
+# ── Cache sampling rate (Layer 1) ─────────────────────────────────────────────
+# The raw session signal is downsampled and stored at this rate.
+# 10 Hz: Nyquist = 5 Hz, well above the 0.5 Hz HR content.
+# Set to None to store at native MFF rate (larger cache, usually unnecessary).
+# Changing this requires FORCE_RELOAD. Everything else is Layer 2.
+HR_CACHE_SFREQ = 10.0   # Hz
+
+# ── Epoch windows (Layer 2 — all free to change without reload) ───────────────
+WIDE_TMIN = -10.0   # full epoch cut window (applied in Layer 2 from raw session)
+WIDE_TMAX =  20.0
+ANAL_TMIN =  -5.0   # analysis / plot window (subset of WIDE)
 ANAL_TMAX =  10.0
 
 # ── Baseline ──────────────────────────────────────────────────────────────────
 # Moving baseline: each trial uses its own pre-trigger window, so slow HR
 # drift across the session is automatically corrected per event.
-BASELINE_TMIN   = -5.0   # s — start of baseline window
-BASELINE_TMAX   =  0.0   # s — end of baseline window (= trigger)
-BASELINE_METHOD = "mean"  # "mean" or "median"
+BASELINE_TMIN   = -6.0     # s — start of baseline window
+BASELINE_TMAX   = -1.0     # s — excludes SpO2 sensor lag (~1s hardware averaging delay)
+BASELINE_METHOD = "median"    # "mean" or "median"
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
-SCORE_METHOD = "max_minus_baseline"   # peak HR in window minus baseline mean
-SCORE_TMIN   =  0.0   # s — post-startle window for peak HR search
-SCORE_TMAX   =  6.0   # s
+# max_minus_baseline: peak HR in score window minus baseline (captures brief tachycardia)
+# mean_minus_baseline: mean HR in score window minus baseline (less sensitive to spikes)
+SCORE_METHOD = "max_minus_baseline"
+SCORE_TMIN   =  2.0   # s — post-startle window start
+SCORE_TMAX   =  5.0   # s — post-startle window end
 
 # ── Rejection ─────────────────────────────────────────────────────────────────
 HR_MIN_BPM = 30    # reject if baseline mean below this (artifact / probe off)
@@ -57,7 +67,35 @@ HR_MAX_BPM = 200   # reject if baseline mean above this (artifact)
 # Z-score on baseline variability: if pulse rate jumps around in the baseline
 # window (high std relative to other trials), the probe was likely unstable.
 HR_Z_SCORE_THRESHOLD = 3.0   # session-normalised std of baseline; None = disabled
-SCORE_MAX_PCT = 50.0         # reject trial if |score| exceeds this % change; None = disabled
+SCORE_MAX_PCT = 30.0         # reject trial if |score| exceeds this % change; None = disabled
+SCORE_MIN_PCT = None         # never reject by direction of effect — data quality only
+
+# ── Artifact cleaning (flat plateaus + spikes) ────────────────────────────────
+# SpO2-Pulse updates every ~2 s. Freezes longer than FLAT_MIN_SEC = probe dropout.
+# Spikes are brief excursions >> SPIKE_THRESH_BPM above the local 5-s median.
+# Both are linearly interpolated before any rejection gate runs.
+# Optional lowpass filter on epoch (applied after artifact cleaning, before scoring).
+# Smooths the BPM staircase so peak reflects sustained elevation, not a single high step.
+# None = no filter (raw staircase); 0.3 Hz is a reasonable starting point.
+SIGNAL_LOWPASS_HZ = None   # Hz; set to e.g. 0.3 to enable
+
+FLAT_MIN_SEC      = 12.0    # seconds frozen = dropout (normal blocks ≤ 7s; dropouts = 8s+)
+SPIKE_THRESH_BPM  = 20.0   # BPM deviation from local median = impulse artifact
+
+# ── Artifact coverage gates ───────────────────────────────────────────────────
+# Applied independently to baseline and score windows after interpolation.
+# A window is rejected if EITHER threshold is exceeded:
+#   total      — fraction of window that was artifact (many small hits)
+#   contiguous — largest single artifact run / window length (one long gap)
+FLAT_BASELINE_TOTAL_MAX      = 0.50   # >50% total artifact in baseline → reject
+FLAT_BASELINE_CONTIGUOUS_MAX = 0.40   # >40% single gap in baseline   → reject
+FLAT_SCORE_TOTAL_MAX         = 0.50   # >50% total artifact in score   → reject
+FLAT_SCORE_CONTIGUOUS_MAX    = 0.40   # >40% single gap in score       → reject
+
+# Dominant-flat gate: reject if any single constant-BPM block covers >this
+# fraction of the score window, even if shorter than FLAT_MIN_SEC.
+# Catches trials where BPM never updated during the response window.
+SCORE_FLAT_DOMINANT_MAX      = 0.85   # fraction; None = disabled
 
 # ── Trial classification ──────────────────────────────────────────────────────
 USE_SUBJECTIVE_TRIAL_TYPE = False

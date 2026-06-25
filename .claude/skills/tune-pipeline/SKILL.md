@@ -1,12 +1,13 @@
 ---
 name: tune-pipeline
-description: Active parameter tuning skill for HR and Airflow pipelines. Evaluates current results, iterates config parameters using signal-specific physiological constraints, and reports each change with a one-sentence justification. Goal: find settings where Evening > Morning startle reactivity is statistically or visually clear.
+description: Autonomous parameter tuner for HR and Airflow pipelines. Runs coordinate-descent over analysis parameters (no MFF reloading), writes the best config to disk, and prints a full change log. Goal: find settings where Evening > Morning startle reactivity is statistically or visually clear.
 ---
 
 # Pipeline Tuner
 
-Active optimization loop. Evaluate → decide → change config → explain → re-evaluate.
-Every change is shown to the user with a one-line reason before the next run.
+Run `tune.py` — it operates fully autonomously, no user input required.
+At the end it prints a full change log (what changed, why, before/after p-value)
+and writes the winning parameters directly to the config file.
 
 **All commands run from `/Users/yotameviatar/vs_code`.**
 
@@ -16,158 +17,170 @@ Every change is shown to the user with a one-line reason before the next run.
 
 Sleep reduces physiological reactivity to emotional stimuli.
 → Evening sessions should show larger startle responses than Morning sessions.
-→ The target pattern: **Eve > Mor** across both Negative and Neutral conditions.
-→ Secondary: Negative trials should show larger responses than Neutral (startle potentiation).
+→ Target pattern: **Eve > Mor**, ideally Wilcoxon p < 0.05.
+→ Secondary: Negative trials > Neutral (startle potentiation by valence).
 
-"Sweet spot" = parameter set where group boxplots and average timecourses show clear,
-interpretable Eve > Mor separation, ideally with Wilcoxon p < 0.05.
+**What a good result looks like** (from EMG reference plots):
+- Timecourse: Evening (orange) curve rises clearly above Morning (purple) after t=0
+- Pre-stimulus period near zero (baseline corrected), flat
+- Peak separation visible and maintained throughout the score window
+- Boxplot: orange median above purple, most connecting lines red (declining),
+  statistical bracket showing p < 0.05
 
 ---
 
-## Step 1 — Evaluate current state
+## Quick start
 
 ```bash
 cd /Users/yotameviatar/vs_code
+
+# Step 1: evaluate current state (one-shot, read-only)
 .venv/bin/python .claude/skills/tune-pipeline/evaluate.py hr
 .venv/bin/python .claude/skills/tune-pipeline/evaluate.py airflow
-```
 
-Read the output. Key numbers to check:
-- **Rejection rate**: ideally 5–20%. If > 30%, criteria are too strict.
-- **Eve vs Mor direction**: Eve > Mor is the expected direction. If reversed, the window is capturing the wrong part of the signal.
-- **p-value**: aim for < 0.05. If > 0.15, the window or baseline is likely misaligned.
-- **Per-condition means**: all four should be in a physiologically plausible range.
+# Step 2: run the autonomous tuner
+.venv/bin/python .claude/skills/tune-pipeline/tune.py hr
+.venv/bin/python .claude/skills/tune-pipeline/tune.py airflow
 
----
-
-## Step 2 — Decide what to change
-
-Read the metrics, then apply the signal-specific rules below to decide one parameter
-to change. Change one parameter at a time. Re-evaluate. Explain the decision.
-
-**Report format for each change:**
-```
-Pipeline: HR
-Changed:  SCORE_TMAX  6.0 → 4.0
-Reason:   HR responses peak within 2–4 s of startle; the 6 s window was including
-          post-response HR recovery which dilutes the peak signal.
-Result:   Eve vs Mor p improved 0.12 → 0.04 *
-```
-
----
-
-## HR signal — what it is and valid ranges
-
-**What it is**: SpO2-Pulse is a hardware-computed BPM output from the pulse oximeter.
-It is NOT a raw PPG waveform. It updates approximately every 2 seconds (staircase signal).
-No filtering should be applied — it would destroy the BPM values.
-
-**Physiological response to startle**:
-- Startle triggers a brief sympathetic surge → HR increases within 2–5 s.
-- The response is transient — HR typically returns toward baseline within 8–10 s.
-- Morning sessions: smaller and shorter HR increase expected (less arousal).
-
-**Valid parameter ranges for HR:**
-
-| Parameter | Valid range | Notes |
-|---|---|---|
-| `SCORE_TMIN` | 0.0 – 2.0 s | Start of response window. Don't start at t=0 — signal takes ~1–2 s to update. |
-| `SCORE_TMAX` | 3.0 – 8.0 s | End of response window. >8 s captures post-response drift, not the startle peak. |
-| `BASELINE_TMIN` | -6.0 – -2.0 s | Need at least 2–3 BPM readings (signal updates every 2 s). |
-| `BASELINE_TMAX` | 0.0 (fixed) | Always end at trigger. |
-| `HR_MIN_BPM` | 30–50 | Lower = keep more trials. Raise if seeing physiologically impossible baselines. |
-| `HR_MAX_BPM` | 150–200 | Upper. 200 is already generous. |
-| `HR_Z_SCORE_THRESHOLD` | 2.0 – 4.0 | Z-score on baseline variability. Tighten (lower) to reject unstable baselines. |
-| `SCORE_MAX_PCT` | 20 – 80 | Outlier rejection. Start at 50. Tighten if large outliers dominate the boxplots. |
-
-**What to try first if Eve vs Mor is not significant:**
-1. Narrow `SCORE_TMAX` toward 4 s — most HR startle responses peak at 2–4 s
-2. Widen baseline: try `BASELINE_TMIN = -4.0` (steady BPM window, not too long)
-3. If too many rejections: loosen `SCORE_MAX_PCT` to 80 or `HR_Z_SCORE_THRESHOLD` to 4.0
-
-**What NOT to do with HR:**
-- Do not set `SCORE_TMAX > 10 s` — this captures HR drift unrelated to startle
-- Do not set baseline window > 8 s — slow HR drift contaminates baseline mean
-- Do not apply any filter — the signal is already BPM
-
----
-
-## Airflow signal — what it is and valid ranges
-
-**What it is**: Respiratory airflow/belt signal, cleaned by NeuroKit2 (`RSP_Clean`).
-Peaks and troughs are detected by NeuroKit2 and stored per epoch.
-Score = gasp ratio = abs(response amplitude / baseline amplitude).
-Gasp ratio > 1 means the post-startle breath was larger than the baseline breath.
-
-**Physiological response to startle**:
-- Startle typically causes a brief respiratory pause or gasp.
-- The gasp (if present) occurs within 0.5–3 s of the probe.
-- Post-gasp: breathing normalizes within 5–8 s.
-- Morning: smaller/shorter gasp expected.
-
-**Valid parameter ranges for Airflow:**
-
-| Parameter | Valid range | Notes |
-|---|---|---|
-| `RESPONSE_TMIN` | 0.0 – 1.0 s | Start of gasp window. Gasp begins immediately after startle. |
-| `RESPONSE_TMAX` | 2.0 – 6.0 s | End of gasp window. >6 s captures post-gasp normalization, not the gasp. |
-| `BASELINE_TMIN` | -6.0 – -2.0 s | Need at least 1–2 full breath cycles (~4–6 s at 0.2–0.3 Hz). |
-| `BASELINE_TMAX` | 0.0 (fixed) | Always end at trigger. |
-| `AIRFLOW_Z_SCORE_THRESHOLD` | 2.0 – 4.0 | Reject if baseline breathing variability is extreme. |
-| `AIRFLOW_SCORE_MAX` | 5.0 – 20.0 | Reject if gasp ratio is implausibly large (signal artifact). |
-
-**What to try first if Eve vs Mor is not significant:**
-1. Narrow `RESPONSE_TMAX` toward 3 s — most gasps resolve within 3 s
-2. Widen baseline toward -5 s — need stable baseline amplitude over full breaths
-3. If rejection rate high: check `AIRFLOW_SCORE_MAX` (default 10); loosen if needed
-
-**What NOT to do with Airflow:**
-- Do not set `RESPONSE_TMAX > 8 s` — post-gasp normalization is not the signal of interest
-- Do not set baseline < 2 s — won't capture a full breath cycle
-- NeuroKit2 already handles cleaning — do not add additional filtering
-
----
-
-## Step 3 — Apply the change
-
-Edit the relevant config file:
-- HR: `HR/hr_config.py`
-- Airflow: `Airflow/airflow_config.py`
-
-No cache reload needed for these parameters (both are Layer 2 — applied on every run):
-- `SCORE_TMIN`, `SCORE_TMAX`, `RESPONSE_TMIN`, `RESPONSE_TMAX`
-- `BASELINE_TMIN`, `BASELINE_TMAX`
-- `HR_MIN/MAX_BPM`, `HR_Z_SCORE_THRESHOLD`, `SCORE_MAX_PCT`
-- `AIRFLOW_Z_SCORE_THRESHOLD`, `AIRFLOW_SCORE_MAX`
-
-Re-run `evaluate.py` immediately after and report the before/after numbers.
-
----
-
-## Step 4 — Stopping criteria
-
-Stop tuning when any of:
-- Eve vs Mor Wilcoxon p < 0.05 and direction is Eve > Mor
-- After 5 iterations with no improvement in p-value or direction
-- Rejection rate drops below 5% (over-accepting) or rises above 35% (over-rejecting)
-
-If after 5 iterations no improvement: report the best parameter set found and note
-that the signal may not show a robust Eve > Mor effect in this dataset.
-
----
-
-## Full pipeline run (to generate plots after finding good params)
-
-```bash
-cd /Users/yotameviatar/vs_code
+# Step 3: regenerate plots with the new parameters
 .venv/bin/python -m HR.hr_main
 .venv/bin/python -m Airflow.airflow_main
 ```
 
-Key plots to check after tuning:
-- `group_overall_timecourse.png` — grand mean Eve vs Mor timecourse
-- `boxplot_eve_vs_mor.png` — overall Eve vs Mor boxplot
-- `group_neg_neu_ratio_boxplot.png` — Neg/Neu ratio Eve vs Mor
+The tuner uses the **two-layer cache** — no MFF files are re-read.
+Each evaluation is ~150 ms; a full 25-candidate search takes ~5 seconds.
+When done, it writes the winning parameters to the config file automatically.
+
+---
+
+## What tune.py does
+
+1. Loads cache (`hr_cache.pkl` or `airflow_cache.pkl`)
+2. Evaluates initial state: direction (Eve>Mor?), p-value, rejection rate
+3. For each parameter in order of expected impact, tries all candidate values
+4. Keeps the value that maximises the objective score:
+   - **Direction correct (Eve > Mor)** is required — wrong-direction params are rejected
+   - Then minimises p-value (`-log10(p)`)
+   - Penalises rejection rate < 2% (over-accepting) or > 30% (over-rejecting)
+5. Locks in each improvement before testing the next parameter
+6. Writes the final parameters to the config file
+7. Prints a full change log
+
+### Example output
+
+```
+============================================================
+Pipeline: HR   Cache: 744 trials across 24 subjects
+============================================================
+
+Initial:  Mor>Eve  p=0.2341 ns  rej=8.3%  n=22  (Eve=2.134 Mor=2.891)
+Params:   SCORE_TMAX=8.0, SCORE_TMIN=0.0, BASELINE_TMIN=-3.0, ...
+
+  ✓ SCORE_TMAX: 8.0 → 4.0
+    Reason: HR startle peaks at 2–4s; longer windows capture post-response drift → narrowed 8.0→4.0
+    Before: Mor>Eve  p=0.2341 ns  rej=8.3%
+    After:  Eve>Mor  p=0.0412 *   rej=8.3%
+
+  — SCORE_TMIN: no improvement (kept 0.0)
+  — BASELINE_TMIN: no improvement (kept -3.0)
+  ...
+
+Config written → HR/hr_config.py
+
+============================================================
+TUNING COMPLETE
+============================================================
+Final:    Eve>Mor  p=0.0412 *  rej=8.3%  n=22  (Eve=3.102 Mor=2.134)
+
+Changes (1 total):
+  1. SCORE_TMAX: 8.0 → 4.0
+     HR startle peaks at 2–4s; longer windows capture post-response drift → narrowed 8.0→4.0
+     Mor>Eve  p=0.2341 ns  rej=8.3%
+     → Eve>Mor  p=0.0412 *  rej=8.3%
+
+✓ Target achieved: Eve > Mor  0.0412 *
+
+Next: .venv/bin/python -m HR.hr_main
+```
+
+---
+
+## Parameters searched
+
+### HR
+
+| Parameter | Candidates | Notes |
+|---|---|---|
+| `SCORE_TMAX` | 2–8 s | HR startle peaks at 2–4s; cap at 8s |
+| `SCORE_TMIN` | 0–2 s | Signal updates every ~2s |
+| `BASELINE_TMIN` | -2 to -6 s | Too long = slow drift contamination |
+| `BASELINE_METHOD` | median, mean | Median more robust to BPM spikes |
+| `SCORE_METHOD` | max_minus_baseline, mean_minus_baseline | Peak vs. mean of response window |
+| `WIDE_TMAX` | 12, 15, 20 s | Wider epoch = more post-startle context |
+| `WIDE_TMIN` | -8, -10, -12 s | Longer pre-stimulus window |
+| `SCORE_MAX_PCT` | 30–80 % | Outlier rejection on % change score |
+| `HR_Z_SCORE_THRESHOLD` | 2.0–4.0 | Baseline variability gate |
+| `FLAT_MIN_SEC` | 6–12 s | Min frozen BPM to flag as dropout |
+| `SPIKE_THRESH_BPM` | 15–30 | BPM deviation flagged as spike |
+| `FLAT_*_CONTIGUOUS_MAX` | 0.30–0.60 | Max single artifact gap per window |
+| `FLAT_*_TOTAL_MAX` | 0.30–0.60 | Max total artifact fraction per window |
+
+**Hard constraint:** no bandpass filtering — SpO2-Pulse is hardware BPM; filtering destroys values.
+
+### Airflow
+
+| Parameter | Candidates | Notes |
+|---|---|---|
+| `RESPONSE_TMAX` | 1.5–6 s | Gasp resolves in 2–4s |
+| `RESPONSE_TMIN` | 0–1 s | Gasp begins immediately post-startle |
+| `BASELINE_TMIN` | -2 to -6 s | Need ≥1 full breath cycle |
+| `WIDE_TMAX` | 12, 15, 20 s | Wider epoch = more post-startle context |
+| `WIDE_TMIN` | -6, -8, -10 s | Longer pre-stimulus window |
+| `AIRFLOW_SCORE_MAX` | 5–20 | Gasp ratio outlier gate |
+| `AIRFLOW_Z_SCORE_THRESHOLD` | 2.0–4.0 | Baseline variability gate |
+| `AIRFLOW_AMPLITUDE_Z_THRESHOLD` | 3.0–6.0 | Robust z-score gate on epoch amplitude |
+| `RSP_CLEAN_METHOD` | khodadad2018, biosppy | NK2 filter method (slow — re-runs per candidate) |
+
+---
+
+## Cache reload boundary
+
+Both pipelines now share the same two-layer architecture:
+
+**Layer 1 cache** (`sessions` key) stores: raw signal + trigger sample positions + CSV metadata.  
+Written once; never re-read unless FORCE_RELOAD=True.
+
+**Layer 2** (`apply_analysis_params`) runs on every invocation and re-applies all analysis params.
+
+**Layer 1 (requires FORCE_RELOAD):**
+- HR: `HR_CHANNEL`, `HR_CACHE_SFREQ`, trigger codes
+- Airflow: `AIRFLOW_CHANNEL`, `CACHE_SFREQ`, trigger codes
+
+**Layer 2 (all free to tune — handled by tune.py):**
+- HR: `WIDE_TMIN/TMAX`, `BASELINE_*`, `SCORE_*`, `HR_*`, `FLAT_*`, `SPIKE_*`
+- Airflow: `WIDE_TMIN/TMAX`, `BASELINE_*`, `RESPONSE_*`, `RSP_CLEAN_METHOD`, `AIRFLOW_*`
+
+---
+
+## Signal Credibility vs. Rejection Optimization (The Core Logic)
+
+When updating or executing this tuning pipeline, you must distinguish between **blind mathematical optimization** and **biological credibility**. The goal is never to "game" the rejection system to manipulate the p-value. The goal is to maximize statistical power ($n$) *only* by recovering genuinely salvageable signals.
+
+### 1. The Core Philosophy
+*   **The Sacred Boundary (Credibility):** We cannot invent data. If a signal is fundamentally corrupted, hiding the noise through aggressive interpolation creates a "hallucinated" physiological response. This violates scientific validity.
+*   **The Playground (Optimization):** Standard pipeline defaults are often overly conservative (e.g., throwing away a whole 8-second trial because of a 0.5-second flatline). The "playground" is the safe zone where micro-adjustments to rejection rules can recover valid data that a blunt algorithm would discard.
+
+### 2. Biological Constraints for Interpolation
+When assessing whether to interpolate or reject, apply this logical framework:
+*   **Context Matters (Baseline vs. Response):**
+    *   *Baseline window:* Needs to be highly pristine to establish a true relative zero. If the baseline is a flatline or pure noise, the entire trial loses its anchor point. **Default to strict rejection if noisy.**
+    *   *Score/Response window:* If the physiological response has already begun and a brief dropout occurs, the trajectory of the signal might still be highly predictable. **Default to safe interpolation if less than 50% is flat.**
+*   **The Information Loss Threshold:**
+    *   If a flatline spans a minor fraction of a window (e.g., < 30–50%), the underlying biological trend is mathematically recoverable via smart interpolation (like cubic splines or NeuroKit defaults).
+    *   If it spans a majority of the window, the physiological information is permanently lost. Interpolating here is akin to fabricating data. **Must reject.**
+
+### 3. Your Analytical Directive
+Before changing any rejection or interpolation code, you must evaluate the biological cost. If a change drops the p-value but increases the interpolation rate to a point where the curves look unnaturally smooth or artificial, **the change must be rejected**, even if the statistical score is technically "better."
 
 ---
 
@@ -177,3 +190,8 @@ Key plots to check after tuning:
 HR:      /Users/yotameviatar/vs_code/HR/hr_config.py
 Airflow: /Users/yotameviatar/vs_code/Airflow/airflow_config.py
 ```
+
+Key plots to review after tuning:a
+- `group_overall_timecourse.png` — grand mean Eve vs Mor timecourse
+- `boxplot_eve_vs_mor.png` — overall Eve vs Mor boxplot
+- `group_neg_neu_ratio_boxplot.png` — Neg/Neu ratio Eve vs Mor
