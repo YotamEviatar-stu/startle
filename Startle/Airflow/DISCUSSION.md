@@ -32,8 +32,8 @@ review:
 5. gaussion from pi = 0 (bx)
 6. refractory preiod.
 7. latency 
-8. adding a sound marker
-9. image generation -
+8. adding a sound marker - DONE
+10. shoulder bfr peak
 ## Discussion - implementation,  less logical
 1. Lineraity - authors used 40s, suggest removing linearity component for shorter windows 
 2. More manual inspection needs to be done
@@ -51,7 +51,19 @@ review:
 ## Problems — concrete mismatches/gaps to fix
 
 1. Our **cycle-detection** filter is a single 2nd-order bandpass where PsPM runs two separate 1st-order `filtfilt` passes (different roll-off/phase). *(The other half of this — one shared FINAL high-pass across all three measures — is now fixed; see Resolved.)*
-2. Per-breath amplitude plausibility — RESOLVED as a two-layer scheme, not a single either/or choice: `SUBJECTS_EXCLUDE` (the coarse session/subject list) is now ALWAYS honoured regardless of `GLM_ARTIFACT_METHOD`, because the Hampel bound is session-relative and structurally misses a *uniformly*-corrupted session (e.g. DA01). `GLM_ARTIFACT_METHOD` (default `hampel_reject_trials`) then handles per-trial/per-cycle spikes in every session the manual list doesn't park. See `GLM_ARTIFACT_METHOD` in `airflow_config.py` for the full rationale.
+2. Per-breath amplitude plausibility — three handling methods are now selectable via `GLM_ARTIFACT_METHOD` (default `manual_exclude` = the coarse session/subject list, unchanged; `hampel_drop_cycles` and `hampel_reject_trials` available + documented). Still OPEN: which to adopt as the standard, and that the Hampel bound is session-relative so it misses a *uniformly*-corrupted session (e.g. DA01) — those still need the manual list.
 3. We fit each trial separately; PsPM fits one model per condition across the whole session — a deliberate choice, but must be disclosed whenever citing the method. *(Now the leading suspect for the null GLM result — see GLM_METHOD_FOUNDATIONS.md §7.)*
 
 ---
+
+## Discussion 13/07
+1. going over trial triggers - pspm session
+2. full session overview
+3. excluding sessions
+4. rejection method according to pspm
+5. signal analysis agent
+6. make sure excluded session are excluded
+7. check morning vs eve rejected trial
+8. what does pspm say regarding what should be looked in the raw trial data after a trigger? does necesseraly the peak is the eyeball metric?
+9. make sure loaded trials txt are from the new cache
+10. check lg07 mor
