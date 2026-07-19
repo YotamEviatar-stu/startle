@@ -20,7 +20,10 @@ import numpy as np
 from scipy import stats
 
 REPO = os.path.expanduser("~/vs_code")
+# Two inserts needed: airflow_processor uses `import Startle.Airflow.*` (needs repo root);
+# everything else uses `from Airflow import ...` / `from HR import ...` (needs Startle/).
 sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "Startle"))
 
 pipeline = sys.argv[1].lower() if len(sys.argv) > 1 else "hr"
 
@@ -30,7 +33,7 @@ if pipeline == "hr":
     import HR.hr_config as cfg
     from HR import hr_processor as processor
     cache_path  = os.path.join(cfg.OUTPUT_DIR, "_cache", "hr_cache.pkl")
-    config_path = os.path.join(REPO, "HR", "hr_config.py")
+    config_path = os.path.join(REPO, "Startle", "HR", "hr_config.py")
 
     # Parameters searched in order of expected impact.
     # Each entry: (param_name, candidates, physiological reason)
@@ -85,7 +88,7 @@ elif pipeline == "airflow":
     import Airflow.airflow_config as cfg
     from Airflow import airflow_processor as processor
     cache_path  = os.path.join(cfg.OUTPUT_DIR, "_cache", "airflow_cache.pkl")
-    config_path = os.path.join(REPO, "Airflow", "airflow_config.py")
+    config_path = os.path.join(REPO, "Startle", "Airflow", "airflow_config.py")
 
     SEARCH = [
         ("RESPONSE_TMAX",
@@ -126,8 +129,8 @@ else:
 
 assert os.path.exists(cache_path), (
     f"Cache not found: {cache_path}\n"
-    f"Run the pipeline first: .venv/bin/python -m "
-    f"{'HR.hr_main' if pipeline == 'hr' else 'Airflow.airflow_main'}"
+    f"Connect the drive and run: .venv/bin/python Startle/"
+    f"{'HR/hr_main.py' if pipeline == 'hr' else 'Airflow/airflow_main.py'}"
 )
 with open(cache_path, "rb") as f:
     data = pickle.load(f)
@@ -340,4 +343,4 @@ else:
     print(f"✗ Eve > Mor not achieved. The signal may not show a robust session effect.")
 
 print(f"\nNext: regenerate plots with the new parameters:")
-print(f"  .venv/bin/python -m {'HR.hr_main' if pipeline == 'hr' else 'Airflow.airflow_main'}")
+print(f"  .venv/bin/python Startle/{'HR/hr_main.py' if pipeline == 'hr' else 'Airflow/airflow_main.py'}")

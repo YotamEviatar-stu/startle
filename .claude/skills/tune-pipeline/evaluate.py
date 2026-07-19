@@ -17,6 +17,7 @@ from scipy import stats
 
 REPO = os.path.expanduser("~/vs_code")
 sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "Startle"))
 
 pipeline = sys.argv[1].lower() if len(sys.argv) > 1 else "hr"
 
@@ -32,7 +33,7 @@ if pipeline == "hr":
     print(f"         SCORE_MAX_PCT={getattr(config,'SCORE_MAX_PCT',None)}  "
           f"HR_Z_SCORE_THRESHOLD={getattr(config,'HR_Z_SCORE_THRESHOLD',None)}")
 elif pipeline == "airflow":
-    from Airflow import airflow_config as config, airflow_processor as processor
+    from Airflow import airflow_config as config, airflow_processor as processor  # noqa: F811
     cache_path = os.path.join(config.OUTPUT_DIR, "_cache", "airflow_cache.pkl")
     label_min = None
     label_max = None
@@ -47,7 +48,11 @@ else:
     sys.exit(1)
 
 # ── Load cache ────────────────────────────────────────────────────────────────
-assert os.path.exists(cache_path), f"Cache not found: {cache_path}\nRun the pipeline once first."
+assert os.path.exists(cache_path), (
+    f"Cache not found: {cache_path}\n"
+    f"Connect the drive and run: .venv/bin/python Startle/"
+    f"{'HR/hr_main.py' if pipeline == 'hr' else 'Airflow/airflow_main.py'}"
+)
 with open(cache_path, "rb") as f:
     data = pickle.load(f)
 sessions_key = "sessions" if "sessions" in data else "trials"

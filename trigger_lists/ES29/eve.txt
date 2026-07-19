@@ -1,0 +1,25 @@
+ES29 eve -- full trigger list, task block [D101, D124]
+NOTE: original recording crashed mid-session (last event 2026-06-05T03:54:52+03:00, right after a D110, before epochs.xml could be written); this is the restart file (began 25.055s later), used alone -- D101 was never resent, so this window starts at the restart's first event instead of D101. Pre-crash segment not recovered.
+  0  DI39      t=   5.394s  <- image code
+  1  D110      t=   8.282s  <- SOUND
+  2  D105      t=  14.204s  <- fixation onset
+  3  DI18      t=  19.619s  <- image code
+  4  D110      t=  22.292s  <- SOUND
+  5  D105      t=  32.351s  <- fixation onset
+  6  DI33      t=  38.223s  <- image code
+  7  D110      t=  40.971s  <- SOUND
+  8  D105      t=  47.548s  <- fixation onset
+  9  DI19      t=  54.457s  <- image code
+ 10  D110      t=  56.983s  <- SOUND
+ 11  D105      t=  65.144s  <- fixation onset
+ 12  DI32      t=  72.658s  <- image code
+ 13  D110      t=  76.753s  <- SOUND
+ 14  D105      t=  82.691s  <- fixation onset
+ 15  DI31      t=  89.775s  <- image code
+ 16  D110      t=  92.797s  <- SOUND
+ 17  D105      t=  99.522s  <- fixation onset
+ 18  DIN4      t= 107.684s  <- image code
+ 19  D105      t= 119.801s  <- fixation onset
+ 20  DI10      t= 127.802s  <- image code
+ 21  D110      t= 131.559s  <- SOUND
+ 22  D124      t= 136.984s

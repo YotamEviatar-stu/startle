@@ -81,12 +81,31 @@ RAW_DATA_DIR/
 ```
 D101  session start  crop recording here
 D124  session end    crop recording here
-D110  startle probe  t = 0 for every epoch
+D105  fixation/image onset  start of each trial cycle
+D110  startle probe  fires only on has_sound==True trials
+D{N}  picture identity  one-hot line, N == CSV trigger_num column exactly
 ```
 
 DIN channels have prefix `D`. Threshold at 90% of channel max. Contiguous above-threshold samples = one event (keep first sample only).
 
-**Event alignment**: Nth D110 trigger <-> Nth `has_sound == True` CSV row. Sequential order, no timestamps.
+**Per-trial cycle (real task block, between D101 and D124):**
+`D105 (fixation onset) -> D{trigger_num} (picture identity) -> D110 (startle probe, sound trials only) -> next D105`.
+Verified: each `D{N}` channel number equals the CSV's `trigger_num` value for that trial exactly
+(e.g. `DI37` fires for `neutral37.jpg`, trigger_num=37; `DIN8` for `negative8.jpg`, trigger_num=8).
+
+Before `D101` there is a **practice block**: `D100 -> D102 x2 -> six or seven D105/D110 cycles with no
+D{code}` — already excluded once the recording is cropped to `[D101, D124]`. After `D124` there is an
+unrelated third phase (`D102 x2, D120, ~80-90x alternating D121/D122, D123`) with no `D110` in it — not
+startle trials, also excluded by the crop.
+
+**Event alignment (new scheme, validated 8/8 subjects, not yet implemented in any pipeline)**:
+Do not assume "Nth D110 trigger <-> Nth has_sound==True CSV row" — that is a blind sequential-order
+match with no validation, and a single dropped/extra trigger silently misaligns every later trial.
+Instead: `D105` count within `[D101, D124]` equals the CSV's **total** row count (sound + no-sound),
+and each trial's `D{trigger_num}` channel can be cross-checked directly against the CSV's `trigger_num`
+column. Epoch unit is `D105_n -> D105_{n+1}` (last epoch closed by `D124`); baseline is
+`D105_n -> D{code}_n` (pure fixation); response window is `D{code}_n -> D{code}_{n+1}` (picture display
++ subsequent fixation). This does **not** filter by `has_sound` — every CSV row gets an epoch.
 
 ---
 

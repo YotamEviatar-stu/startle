@@ -1,0 +1,24 @@
+AB22 ok
+AG05 ok
+AH19 ok
+AK12 ok
+AS09 ok
+DA01 exc both, flat
+EE10 ok
+ER23 ok
+ES29 problem with _2 (partial session) eve has a drop, maybe valid
+EV15 mor ok. 
+LB17 ok 
+LG07 check mor again -  I SEE 4 TRIALS ARE REALLY NOISY, MAYBE discard - MAKE SURE THEY DONT HEAR MEDIAN
+LO21 ok
+MG14 eve is okay, mor corrupt for now
+MH20 OK
+ML28 OK
+MS13 mor ok, missmatch trigger number eve, exclude for now
+MS18 OK
+NB03 discard both
+OM16 ok 
+RP06 ok
+SH25 ok
+YL26 discard
+YR08 ok

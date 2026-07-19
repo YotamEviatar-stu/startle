@@ -1,0 +1,5 @@
+1. calculate delta in airflow - Wilhelm, F. H., Trajanoski, Z., & Roth, W. T. (1999). Respiratory responses to sudden unpredicted acoustic stimuli. Psychophysiology, 36(2), 245-256.
+2. how respiration changes and correlates with human cgnitive behavior, and how to build a centroid - https://pmc.ncbi.nlm.nih.gov/articles/PMC11978463/#s2
+3. how respiratory is affected by a panic state - https://pmc.ncbi.nlm.nih.gov/articles/PMC5577533/
+4. Characterizing and Modeling Breathing Dynamics: Flow Rate, Rhythm, Period, and Frequency - https://www.frontiersin.org/journals/physiology/articles/10.3389/fphys.2021.772295/full
+5. The Nyquist–Shannon sampling theorem states that to perfectly reconstruct a continuous analog signal, it must be sampled at a rate greater than twice its highest frequency component
