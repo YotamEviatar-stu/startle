@@ -18,31 +18,46 @@ Output: `~/Desktop/airflow_output/airflow_trial_scores.csv` with columns `score_
 
 ### Phase 1: Prepare Signal
 
-**What:** Convert raw Airflow (25 Hz cache) to z-scored 10 Hz trace.
+**What:** Convert raw Airflow (25 Hz cache) to a z-scored 10 Hz detection trace (`raw_z`),
+matching `pspm_resp_pp.m` Stage 1 exactly.
 
 **Steps:**
-- Downsample from 25 Hz → 10 Hz (covers respiration band at Nyquist)
-- Anti-alias lowpass filter (1st-order Butterworth, 5 Hz)
+- Despike (interpolate over brief, extreme-amplitude native samples — sensor glitches, not breaths)
+- Mean-center the native-rate signal
+- Two **cascaded 1st-order** Butterworth filters, each bidirectional (`filtfilt`):
+  lowpass at 0.6 Hz, then highpass at 0.01 Hz — *not* a single combined 2nd-order bandpass
+  design (PsPM designs these as two separate passes; the frequency response differs from
+  one joint `butter(N=2, ...)` filter even though both are nominally "order 2")
+- Downsample 25 Hz → 10 Hz (anti-aliased by the 0.6 Hz lowpass already applied — no
+  separate anti-alias-only stage needed for a signal this narrowband)
 - Z-score the entire session using robust statistics (median/MAD, not mean/std)
   - Robust z-score preserves cycle *timing* but rescales amplitude into session-relative SD units
   - Handles outlier spikes (sensor noise, movement artifacts) without inflating global noise floor
-
+  - `raw_z` is used ONLY for cycle detection (Phase 2) — RA/RFR amplitude is measured on
+    the native raw cache, not this trace (see Phase 2)
 
 ---
 
 ### Phase 2: Detect Cycles → Compute Three Features
 
-**What:** Identify breath cycles and extract RP, RA, RFR per cycle.
+**What:** Identify breath cycles on the Phase 1 trace, then extract RP, RA, RFR per cycle
+from the native raw signal.
 
 **Steps (from the paper):**
-1. Bandpass filter (2nd-order Butterworth, 0.01–0.6 Hz) + 1s median filter
-2. Detect negative zero-crossings on mean-centered signal → inspiration onsets
+1. 1s median filter (smooths `raw_z` so only true breath oscillations trigger crossings)
+2. Detect negative zero-crossings on `raw_z` → inspiration onsets (bellows-style rule —
+   correct for a flow transducer like Airflow)
 3. Per cycle, compute:
    - **RP (Respiration Period)** = duration from onset *i* to onset *i+1* (seconds)
      - Why: Period linearly relates to autonomic input (unlike rate, its inverse)
-   - **RA (Respiration Amplitude)** = peak-to-trough of z-scored signal within the cycle (SD units)
+   - **RA (Respiration Amplitude)** = peak-to-trough of the **native raw cached signal**
+     within the cycle window (native units, NOT z-scored/SD units) — measured on the raw
+     signal, never on `raw_z`, matching PsPM's `resp` vs `newresp` separation. This
+     matters more for a flow sensor than PsPM's bellows/chest-strap signal: flow ≈
+     d(volume)/dt, so differentiation pushes real inspiratory-peak energy into
+     frequencies the 0.6 Hz detection filter would otherwise clip.
      - Why: Linearly relates to tidal volume (Binks et al., 2007)
-   - **RFR (Respiration Flow Rate)** = RA / RP (SD/sec)
+   - **RFR (Respiration Flow Rate)** = RA / RP (native units/sec)
      - Why: Linearly related to tidal volumetric flow rate (volume per unit time)
 
 
@@ -56,13 +71,17 @@ Output: `~/Desktop/airflow_output/airflow_trial_scores.csv` with columns `score_
 1. Assign each cycle's RP/RA/RFR to the timestamp of the *following* inspiration onset
    - Why: Breaks dependency; each feature is "assigned to the start of the following inspiration cycle"
 2. Linearly interpolate each metric to 10 Hz (full session)
-3. **Filter twice with unidirectional 1st-order Butterworth bandpass** (0.001–1 Hz)
-   - High-pass (0.001 Hz) removes DC (mean breathing rate)
+3. **Filter with a unidirectional 1st-order Butterworth bandpass, PER METRIC** — PsPM does
+   NOT share one high-pass across the three channels: RP gets 0.01 Hz, RA/RFR get 0.001 Hz
+   (low-pass 1 Hz shared by all three)
+   - High-pass removes DC (mean breathing rate) — more aggressively for RP than RA/RFR
    - Low-pass (1 Hz) removes jitter and high-frequency noise
    - Unidirectional (one-pass `lfilter`, not `filtfilt`) preserves causality
    - Paper: "Interpolated data were then filtered twice with a unidirectional first-order Butterworth band pass filter"
 
-**Output:** Three continuous 10 Hz series: RP_series, RA_series, RFR_series (full session, z-scored SD units)
+**Output:** Three continuous 10 Hz series: RP_series (seconds), RA_series (native signal
+units), RFR_series (native units/sec) — full session length. None of these are in
+z-scored/SD units; only the Phase 1 detection trace (`raw_z`) is z-scored.
 
 ---
 
