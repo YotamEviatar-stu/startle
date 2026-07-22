@@ -1,6 +1,6 @@
 ---
 name: red-team-review
-description: Objective red-team peer review of the HR or Airflow startle pipeline. Hunts HIDDEN statistical and physiological conceptual flaws — confounds, circular rejection, condition-correlated trial loss, leaky normalizers, single-sample anchors, alignment/selection effects, and optimize-to-p circularity — that could reverse or inflate the Evening>Morning conclusion. Verifies every empirical claim against the EXISTING cache pickle (fast in-memory Layer 2, never a rebuild). Takes NO position on strict-vs-loose rejection: it attacks over-rejection and under-rejection equally. Invoke whenever HR or Airflow analysis needs a tough, fair peer-review challenge — before trusting a p-value, before writing up results, or when a result looks too good, too bad, or too fragile. Use this instead of the retired `punisher`/`adversarial-audit` skill.
+description: Objective red-team peer review of the HR or Airflow startle pipeline. Hunts HIDDEN statistical/physiological flaws — confounds, circular rejection, condition-correlated trial loss, leaky normalizers, single-sample anchors, alignment/selection effects, optimize-to-p circularity — that could reverse or inflate the Evening>Morning conclusion. Verifies claims against the EXISTING cache pickle (never a rebuild). Attacks over- and under-rejection equally. Invoke before trusting a p-value, before write-up, or when a result looks too good, too bad, or too fragile. Replaces the retired `punisher`/`adversarial-audit` skill.
 ---
 
 # Red-Team Review — Startle Pipelines

@@ -106,10 +106,8 @@ This overrides the general instinct to document non-obvious choices while code i
 
 ## Communication Style
 
-General communication/explanation style (numeric-example format for code changes, layered concept teaching, orienting-in-codebase requirements) lives in `~/.claude/CLAUDE.md` — applies here too. Startle-specific additions to that style:
+General communication/explanation style (numeric-example format for code changes, layered concept teaching, orienting-in-codebase requirements, test-statistic/p-value reporting, not flagging theoretical issues on uniform data) lives in `~/.claude/CLAUDE.md` — applies here too. Startle-specific addition:
 
-- Don't raise theoretical code-review findings (e.g. hardcoded sample rate) when the data is uniform — don't invent issues that don't apply to this dataset.
-- When reporting results, always include the test statistic and p-value alongside any visual summary.
 - When explaining a paper's method (e.g. PsPM's GLM), stay at the level of what's specific to Startle/PsPM: canonical basis functions and their parameters, orthogonalization, event-train construction from the experimental design, per-modality filter choices, session-wide vs. per-trial architecture. Don't derive generic OLS/regression mechanics from scratch.
 
 ## Data & Caching
