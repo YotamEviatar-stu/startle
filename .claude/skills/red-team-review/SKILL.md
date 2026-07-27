@@ -1,6 +1,6 @@
 ---
 name: red-team-review
-description: Objective red-team peer review of the HR or Airflow startle pipeline. Hunts HIDDEN statistical/physiological flaws — confounds, circular rejection, condition-correlated trial loss, leaky normalizers, single-sample anchors, alignment/selection effects, optimize-to-p circularity — that could reverse or inflate the Evening>Morning conclusion. Verifies claims against the EXISTING cache pickle (never a rebuild). Attacks over- and under-rejection equally. Invoke before trusting a p-value, before write-up, or when a result looks too good, too bad, or too fragile. Replaces the retired `punisher`/`adversarial-audit` skill.
+description: Objective red-team peer review of the HR/Airflow startle pipeline. Hunts hidden statistical flaws (circular rejection, condition-correlated trial loss, leaky normalizers, optimize-to-p) using the existing cache pickle, never a rebuild. Invoke before trusting a p-value or write-up.
 ---
 
 # Red-Team Review — Startle Pipelines
@@ -90,7 +90,7 @@ then count or recompute. Example skeleton:
 ```python
 import pickle, importlib, numpy as np
 cfg  = importlib.import_module("Airflow.airflow_config")     # or HR.hr_config
-proc = importlib.import_module("Airflow.airflow_processor")  # or HR.hr_processor
+proc = importlib.import_module("Airflow.airflow_amp_processor")  # or HR.hr_processor
 cache = pickle.load(open(f"{cfg.OUTPUT_DIR}/_cache/airflow_cache.pkl", "rb"))
 trials_data, _ = proc.apply_analysis_params(cache["sessions"], cfg)
 # ...now inspect trials_data[subj][sess] dicts: 'score','rejected','rejection_reason','label', etc.

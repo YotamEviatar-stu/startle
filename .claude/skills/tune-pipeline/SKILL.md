@@ -9,7 +9,7 @@ Run `tune.py` — it operates fully autonomously, no user input required.
 At the end it prints a full change log (what changed, why, before/after p-value)
 and writes the winning parameters directly to the config file.
 
-**All commands run from `/Users/yotameviatar/vs_code`.**
+**All commands run from `/Users/yotameviatar/startle-1`.**
 
 ---
 
@@ -32,7 +32,7 @@ Sleep reduces physiological reactivity to emotional stimuli.
 ## Quick start
 
 ```bash
-cd /Users/yotameviatar/vs_code
+cd /Users/yotameviatar/startle-1
 
 # Step 1: evaluate current state (one-shot, read-only)
 .venv/bin/python .claude/skills/tune-pipeline/evaluate.py hr
@@ -187,8 +187,8 @@ Before changing any rejection or interpolation code, you must evaluate the biolo
 ## Config file locations
 
 ```
-HR:      /Users/yotameviatar/vs_code/HR/hr_config.py
-Airflow: /Users/yotameviatar/vs_code/Airflow/airflow_config.py
+HR:      /Users/yotameviatar/startle-1/HR/hr_config.py
+Airflow: /Users/yotameviatar/startle-1/Airflow/airflow_config.py
 ```
 
 Key plots to review after tuning:a

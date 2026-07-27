@@ -1,6 +1,6 @@
 ---
 name: pspm-respiration-audit
-description: Verifies the Airflow/respiration pipeline (Startle/Airflow/, esp. airflow_glm.py, airflow_config.py) against PsPM (bachlab/PsPM), the reference MATLAB toolbox for respiration/SCR/pupil/cardiac analysis. Use whenever Airflow/respiration code is written, edited, or reviewed — filtering cutoffs, cycle/breath detection, RP/RA/RFR extraction, GLM basis functions (tau/sigma), epoch/window definitions, artifact rejection. Also use for "does this match PsPM", "is this how PsPM does it", or references to pspm_resp_pp, pspm_glm, PsPM basis functions by name. Ground-truth reference only — does not run MATLAB/PsPM itself, holds its source-level defaults for line-by-line Python comparison.
+description: Verifies Airflow/respiration code (airflow_glm.py, airflow_config.py) against PsPM (bachlab/PsPM) source — filtering cutoffs, cycle/breath detection, RP/RA/RFR extraction, GLM basis functions (tau/sigma). Use for "does this match PsPM" questions or when Airflow/respiration code is edited. Ground-truth reference only; does not run MATLAB.
 ---
 
 # PsPM Respiration Audit
@@ -12,7 +12,7 @@ exact filter cutoffs, exact cycle-detection logic, and exact basis-function
 parameters, backed by peer-reviewed papers (Bach et al. 2016 for the linear
 respiration model; Castegnetti et al. 2017 for the fear-conditioning
 variant). The job of this skill is to hold that source-level ground truth
-so that when reviewing `Startle/Airflow/airflow_glm.py`,
+so that when reviewing `Airflow/airflow_glm.py`,
 `airflow_config.py`, or `airflow_amp_processor.py`, deviations get named
 precisely — "this differs from `pspm_resp_pp.m` line X" rather than "this
 seems off."

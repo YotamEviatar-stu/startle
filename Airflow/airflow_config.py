@@ -3,6 +3,8 @@ OUTPUT_DIR   = r"/Users/yotameviatar/Desktop/untitled folder/airflow_output"
 
 SUBJECT_FILTER = []
 
+# Unresolved placeholder, not an established rejection rule -- chosen by eyeballing
+# one outlier scan and applied inconsistently across similarly-contaminated sessions.
 SUBJECTS_EXCLUDE = ["DA01", "ES29/eve", "MG14/mor", "MS13/eve", "NB03", "YL26"]
 
 AIRFLOW_CHANNEL = "Airflow"

@@ -8,9 +8,9 @@ This is **academic research**. Results must be statistically defensible, not mer
 
 **Central hypothesis:** Morning physiological reactivity is calmer than Evening. Sleep reduces autonomic and respiratory responses to startling stimuli. The analysis must demonstrate this with real effect sizes and statistical tests (Wilcoxon signed-rank preferred given small N), not just trends in plots.
 
-**Active pipelines:** HR (`Startle/HR/`) and Airflow (`Startle/Airflow/`). Both must be analysed to converge on the same conclusion, strengthening the claim across independent physiological channels.
+**Active pipelines:** HR (`HR/`) and Airflow (`Airflow/`). Both must be analysed to converge on the same conclusion, strengthening the claim across independent physiological channels.
 
-**Canonical reference:** EMG raw (`Startle/emg_raw_potentiation.py`) defines the event logic, trial structure, DIN trigger handling, and baseline approach for generic helpers only (file discovery, event extraction) — epoch/trial extraction itself now lives in `Startle/trial_epochs.py` (see `/startle-experiment`). All pipelines must be consistent with it.
+**Canonical reference:** EMG raw (`extras/emg_raw_potentiation.py`) defines the event logic, trial structure, DIN trigger handling, and baseline approach for generic helpers only (file discovery, event extraction) — epoch/trial extraction itself now lives in `extras/trial_epochs.py` (see `/startle-experiment`). All pipelines must be consistent with it.
 
 ## Pipeline Conventions
 
@@ -20,61 +20,44 @@ Key technical dimensions that must be tuned rigorously and consistently:
 - **Filtering** — bandpass / highpass / lowpass cutoffs appropriate to the signal (HR vs. Airflow have different frequency content); document the choice.
 - **Baseline** — pre-stimulus baseline window length and reference method (mean subtraction, z-score) must match across conditions and sessions.
 - **Epoch timing** — onset offset relative to DIN trigger, epoch length, and any pre/post padding must be principled and matched to the EMG reference.
-- **Artifact handling** — flag or exclude trials with implausible values (e.g. HR outside 40–180 BPM); do not silently average over bad data.
+- **Artifact handling** — flag or exclude trials with implausible values (e.g. HR outside 30–200 BPM, `HR_MIN_BPM`/`HR_MAX_BPM` in `HR/hr_config.py`); do not silently average over bad data.
 - **Aggregation** — report per-trial values and condition means; do not collapse across conditions unless explicitly asked.
 
 ## Airflow Pipeline — Current State
 
-Two parallel scoring paths share the same Layer 1 cache
-(`airflow_amp_processor.process_session`: native-rate 0.01–70 Hz wideband bandpass →
-resample to `CACHE_SFREQ=25 Hz` → ground-truth trial windows from `trial_epochs.py`).
-`SCORING_METHOD` in `airflow_config.py` selects which Layer 2 path runs; each has its own
-config block and rejection gates kept at parity so switching methods doesn't silently
-change strictness.
+`glm_deconvolution` (GLM) is the **primary, active line of work** — `SCORING_METHOD` in
+`airflow_config.py` defaults to it, and `GLM_PRIMARY_METRIC` is the confirmatory endpoint.
+`peak_excursion_normalized` (BxB, "amp") is kept only as a secondary/legacy comparison
+path, not a co-equal method. Both share the same Layer 1 cache
+(`airflow_glm.process_session`: native-rate 70 Hz anti-alias lowpass only — no highpass;
+`signal_raw` deliberately keeps DC content, mirroring PsPM's unfiltered `resp` — →
+resample to `CACHE_SFREQ=25 Hz` → ground-truth trial windows from `extras/trial_epochs.py`).
+Rejection gates mostly share config-name-level parity, but two verified asymmetries remain
+between the paths (`SUBJECTS_EXCLUDE`'s per-session `"SUBJ/sess"` form and `QC_ROBUST_GATES`'
+statistic are GLM-only — see `Airflow/README.md`'s Rejection Gates section) — new work,
+tuning, and audits should default to the GLM path unless told
+otherwise.
 
-- **`peak_excursion_normalized` (BxB, `airflow_amp_processor.py`)** — breath-by-breath
-  peak-picking. Score = max absolute excursion from baseline in the response window,
-  normalised by the session-median NeuroKit2 `RSP_Amplitude` (i.e. multiples of a
-  "typical breath" for that subject/session). A project-specific design choice — PsPM does
-  not document or cover this method.
-- **`glm_deconvolution` (GLM, `airflow_glm.py`)** — implements Bach et al. (2016), "A
-  linear model for event-related respiration responses," modeled directly on PsPM's
-  `pspm_resp_pp.m` / `pspm_glm.m` (verified line-for-line against PsPM source; see the
-  `pspm-respiration-audit` skill):
-  1. Mean-center + two **cascaded 1st-order** Butterworth filters (0.6 Hz lowpass, then
-     0.01 Hz highpass, each bidirectional `filtfilt`) + downsample to 10 Hz + robust
-     (median/MAD) z-score → a detection-only trace (`raw_z`).
-  2. Detect cycle onsets on `raw_z` (negative zero-crossings — the bellows-style rule,
-     correct for a flow transducer like Airflow). Measure RA/RFR on the **native raw
-     signal** (`signal_raw`), never on the filtered/z-scored copy — PsPM's `resp` vs
-     `newresp` separation. This matters more for airflow than for PsPM's bellows/chest-
-     strap signal: flow ≈ d(volume)/dt, so differentiation pushes real inspiratory-peak
-     energy into frequencies the 0.6 Hz detection filter would otherwise clip.
-  3. Interpolate cycles to a continuous 10 Hz series per metric, then apply a
-     **per-modality** "sensitivity" high-pass (RP 0.01 Hz; RA/RFR 0.001 Hz — PsPM does
-     NOT share one cutoff across the three metrics) + a shared 1 Hz low-pass, applied
-     unidirectionally (causal, `lfilter` not `filtfilt`).
-  4. Fit a canonical-response-function GLM — Gaussian bump, published `(tau, sigma)`
-     matched to PsPM to the decimal (RP 4.20/1.65, RA 8.07/3.74, RFR 6.00/3.23),
-     orthogonalized derivative regressor for RA/RFR only (matches PsPM's `bf_type`
-     defaults) — either **per-trial** (`GLM_ESTIMATION="per_trial"`, default: one
-     independent regression per trial) or **pooled session-wide**
-     (`"pooled_session"`: PsPM's actual `pspm_glm.m` architecture — one design matrix per
-     session, one beta per condition). Score = β₁, the CRF regressor's weight.
+- **`peak_excursion_normalized` (BxB, `airflow_amp_processor.py`, secondary/legacy)** —
+  breath-by-breath peak-picking, normalised by session-median NeuroKit2 `RSP_Amplitude`.
+  Project-specific; PsPM does not cover this method.
+- **`glm_deconvolution` (GLM, `airflow_glm.py`, primary)** — Bach et al. (2016) linear
+  respiration model, modeled on PsPM's `pspm_resp_pp.m`/`pspm_glm.m` (verified
+  line-for-line against PsPM source). Full cascade-filter → cycle-detection →
+  per-modality sensitivity-filter → CRF-GLM pipeline is in
+  `Airflow/GLM_METHOD_FOUNDATIONS.md` and the `pspm-respiration-audit` skill — read
+  those before touching this path. Score = β₁, the CRF regressor's weight, either
+  **per-trial** or **pooled session-wide** (`GLM_ESTIMATION`).
 
 `GLM_PRIMARY_METRIC="RA"` is the single pre-registered confirmatory endpoint
 (multiplicity discipline — many Wilcoxons get computed, only one is reported as
 confirmatory); RP/RFR/composite stay secondary/exploratory. Estimation path and primary
 metric are fixed a priori and never chosen by watching the Eve-vs-Mor p-value.
 
-Rejection gates (shared names/thresholds/intent across both paths): `no_cycles_found`,
-`noisy_baseline`, `flat_signal`, `flat_response`, `rate_artifact`, `atypical_shape`
-(shared waveform shape-centroid gate) — plus GLM-only `cycle_gap` (absolute minimum-rate
-floor: catches a real cycle at each window edge with a long dead stretch in between,
-which the std-based gates miss) and an amplitude-spike gate (Hampel upper-bound outlier
-on cycle RA; `GLM_ARTIFACT_METHOD` controls whether flagged cycles are dropped or their
-whole trial is rejected). All gates are a-priori and symmetric across Evening/Morning —
-none inspects the Eve-vs-Mor result.
+Rejection gates (shared across both paths, a-priori and symmetric across Evening/Morning):
+`no_cycles_found`, `noisy_baseline`, `flat_signal`, `flat_response`, `rate_artifact`,
+`atypical_shape` — plus GLM-only `cycle_gap` and an amplitude-spike gate
+(`GLM_ARTIFACT_METHOD`). See `Airflow/README.md` for thresholds and intent.
 
 `SUBJECTS_EXCLUDE` in `airflow_config.py` is an **unresolved placeholder**, not an
 established rejection rule — chosen by eyeballing one outlier scan and applied
@@ -82,13 +65,14 @@ inconsistently across similarly-contaminated sessions (documented as such in the
 file itself). Treat any Airflow result as provisional until this is replaced with a
 principled, consistently-applied criterion.
 
-Full mechanical write-up lives in `Startle/Airflow/README.md` (Layer 1 caching, shared by
-both paths); GLM-specific assumptions and the current confirmatory-test state live in
-`Startle/Airflow/GLM_METHOD_FOUNDATIONS.md` and `DISCUSSION.md`.
+Full mechanical write-up lives in `Airflow/README.md`; GLM-specific assumptions live in
+`Airflow/GLM_METHOD_FOUNDATIONS.md` and `DISCUSSION.md`. Their reported RA p-values are
+**stale** versus the current `SUBJECTS_EXCLUDE`/`GLM_ARTIFACT_METHOD` — see memory
+(`project_pipeline_status`) for current status; rerun before citing.
 
 ## Skills
 
-Project skills should be invoked proactively (see each skill's own description for what it does): `/startle-experiment` (start of any new session, before touching HR or Airflow code), `/cross-pipeline-audit` (whenever HR or Airflow code is written or reviewed), `/tune-pipeline` (autonomous parameter tuning), `/startle-research` (domain literature/methodology research — checks `Startle/papers/` and existing method docs before searching externally).
+Project skills should be invoked proactively (see each skill's own description for what it does): `/startle-experiment` (start of any new session, before touching HR or Airflow code), `/cross-pipeline-audit` (whenever HR or Airflow code is written or reviewed), `/tune-pipeline` (autonomous parameter tuning), `/startle-research` (domain literature/methodology research — checks `papers/` and existing method docs before searching externally).
 
 ## Plotting
 

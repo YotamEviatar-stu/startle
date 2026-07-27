@@ -87,10 +87,10 @@ trial.
 `airflow_glm.py` supports **both** architectures, selected by
 `GLM_ESTIMATION` in `airflow_config.py` (Layer 2, no reload):
 
-- `"per_trial"` **(default)** — an independent regression per trial
+- `"per_trial"` — an independent regression per trial
   (`fit_trial_glm`), each scoped to just that trial's own short window,
   producing one score *per trial*.
-- `"pooled_session"` — PsPM's architecture (`fit_pooled_session_glm`): one
+- `"pooled_session"` **(current default)** — PsPM's architecture (`fit_pooled_session_glm`): one
   design matrix for the whole session, one regressor set per condition
   (valence label, over that session's accepted trials), a single solve per
   metric → **one beta per condition**, written back onto each accepted
