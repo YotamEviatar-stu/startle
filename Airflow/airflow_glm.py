@@ -628,6 +628,14 @@ def run_glm_scoring(sessions_cache, config):
     subjects_exclude = getattr(config, "SUBJECTS_EXCLUDE", {})
     artifact_method  = getattr(config, "GLM_ARTIFACT_METHOD", "hampel_reject_trials")
     artifact_k       = getattr(config, "GLM_ARTIFACT_K", 3.5)
+    estimation       = getattr(config, "GLM_ESTIMATION", "per_trial")
+    if artifact_method == "hampel_reject_trials" and estimation == "pooled_session":
+        raise ValueError(
+            "GLM_ARTIFACT_METHOD='hampel_reject_trials' + GLM_ESTIMATION='pooled_session' "
+            "is forbidden: one contaminated cycle can flip the pooled beta's sign for both "
+            "conditions. Use 'manual_exclude' or 'hampel_drop_cycles' with pooled_session, "
+            "or 'hampel_reject_trials' with per_trial."
+        )
     # SUBJECTS_EXCLUDE is ALWAYS honoured, regardless of GLM_ARTIFACT_METHOD:
     # it parks hand-flagged whole-session contamination (e.g. DA01's session-wide
     # saturation) that the Hampel bound structurally cannot catch, because that
