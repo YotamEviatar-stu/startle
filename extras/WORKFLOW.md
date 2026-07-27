@@ -28,7 +28,7 @@ HR/
 
 Airflow/
   airflow_config.py
-  airflow_processor.py
+  airflow_amp_processor.py
   airflow_main.py
   airflow_explore.ipynb
   airflow_raw_show.ipynb  ← raw signal viewer per subject (NEW)

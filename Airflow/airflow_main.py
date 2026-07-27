@@ -2,7 +2,7 @@
 Airflow Pipeline
 ================
 Run with:
-    .venv/bin/python Startle/Airflow/airflow_main.py
+    .venv/bin/python Airflow/airflow_main.py
 
 Layer 1 (MFF -> cache): ground-truth trial epochs (trial_epochs.build_trial_epochs)
 + raw signal downsampled to CACHE_SFREQ Hz.
@@ -10,7 +10,7 @@ Layer 2 (cache -> analysis): NK2 filter, baseline, rejection, scoring.
 
 Only FORCE_RELOAD=True triggers a full MFF re-read. Everything else
 (filter method, rejection thresholds) is re-applied every run. Epoch/baseline/
-response window timing is ground truth (see Startle/trial_epochs.py), not a
+response window timing is ground truth (see trial_epochs.py), not a
 config knob -- there's nothing left in Layer 2 to "re-apply" for window timing.
 
 GLM scoring path (airflow_glm.py) uses two copies of the signal:
@@ -32,14 +32,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # vs_code root (Startle.X.Y imports)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))       # Startle/
-sys.path.insert(0, os.path.dirname(__file__))                           # Startle/Airflow/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))       # repo root
+sys.path.insert(0, os.path.dirname(__file__))                           # Airflow/
 
 import airflow_config as cfg
-from Startle.Airflow.airflow_amp_processor import process_session, apply_analysis_params
-from Startle.extras.emg_raw_potentiation import find_startle_output_folder, find_mff_candidates, find_csv_by_suffix
-from trial_epochs import load_all_trials_ratings, TriggerAlignmentError
+from airflow_glm import process_session
+from airflow_amp_processor import apply_analysis_params
+from extras.emg_raw_potentiation import find_startle_output_folder, find_mff_candidates, find_csv_by_suffix
+from extras.trial_epochs import load_all_trials_ratings, TriggerAlignmentError
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 

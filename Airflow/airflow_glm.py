@@ -1,29 +1,123 @@
-"""
-airflow_glm.py — GLM/Deconvolution Scoring for Airflow Pipeline
 
-Implements "A Linear Model for Event-Related Respiration Responses" (Bach 2016)
-
-PIPELINE OVERVIEW (see functions for details):
-  Phase 1: Mean-center + respiration-band filter (0.01-0.6 Hz, PsPM's own
-           cutoffs) + downsample + z-score → raw_z, detection-only. The SAME
-           filter that isolates the respiration band also serves as the
-           anti-alias filter for the downsample (pspm_resp_pp.m Stage 1) --
-           no separate anti-alias-only stage is needed for a narrowband signal.
-  Phase 2: Detect cycles on raw_z; measure RP/RA/RFR on signal_raw → cycles[] list
-           (mirrors pspm_resp_pp.m's newresp-for-detection / resp-for-amplitude split)
-  Phase 3: Interpolate cycles → continuous 10Hz series
-  Phase 4: Fit GLM per trial → score_rp, score_ra, score_rfr
-
-Config: airflow_config.py (SCORING_METHOD = "glm_deconvolution")
-Validation: NK2 cross-check (detects artifacts detect_cycles would accept)
-"""
-
+import os
 import numpy as np
 import neurokit2 as nk
 from scipy.signal import butter, filtfilt, lfilter, medfilt, resample
 
+import extras.trial_epochs as trial_epochs
+from Airflow import airflow_qc
 
-# ── Phase 1 ───────────────────────────────────────────────────────────────────
+
+# ── Layer 0 — Cache build (resample; not GLM-specific) ──────────────────────
+# Moved here from airflow_amp_processor.py so the GLM path (primary) no longer
+# depends on the BxB/legacy module for its own caching -- airflow_amp_processor.py
+# now contains only its Layer 2 (apply_analysis_params + BxB scoring).
+
+def _butter_bandpass(lowcut, highcut, fs, order=2):
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+    b, a = butter(order, [low, high], btype='band')
+    return b, a
+
+def _butter_bandpass_filter(data, lowcut, highcut, fs, order=2):
+    b, a = _butter_bandpass(lowcut, highcut, fs, order=order)
+    y = filtfilt(b, a, data)
+    return y
+
+def _butter_lowpass_filter(data, cutoff, fs, order=2):
+    nyq = 0.5 * fs
+    b, a = butter(order, cutoff / nyq, btype='low')
+    return filtfilt(b, a, data)
+
+def process_session(mff_path, ratings_df, config):
+    """ratings_df must be the FULL, unfiltered CSV (trial_epochs.load_all_trials_ratings)
+    -- every row becomes a trial here, sound and no-sound alike.
+
+    Event/epoch extraction always runs on the original full-rate, full-channel
+    raw (read_raw_egi) before channel-pick/downsample -- DIN triggers must not
+    be resampled or have other channels dropped before detection.
+
+    Raises trial_epochs.TriggerAlignmentError on a D105/D{code} mismatch;
+    callers must let this propagate rather than silently continue with an
+    untrustworthy trial/CSV alignment.
+    """
+    import mne
+    if config.VERBOSE:
+        print(f"  Layer 1: Processing raw MFF ({os.path.basename(mff_path)}) ...")
+
+    try:
+        raw = mne.io.read_raw_egi(mff_path, preload=True, verbose=False)
+    except Exception as e:
+        print(f"  Error reading {mff_path}: {e}")
+        return None
+
+    native_sfreq = raw.info["sfreq"]
+    trials = trial_epochs.build_trial_epochs(raw, ratings_df)  # raises on mismatch
+    d101_sample = trial_epochs.first_session_marker_sample(raw)
+
+    ch_names = raw.info["ch_names"]
+    target_ch = next((c for c in ch_names if config.AIRFLOW_CHANNEL.lower() in c.lower()), None)
+    if target_ch is None:
+        if config.VERBOSE:
+            print(f"  Channel '{config.AIRFLOW_CHANNEL}' not found in {ch_names}")
+        return None
+
+    raw.pick([target_ch])
+
+    # ── Anti-alias lowpass only (native rate, before downsampling) ─────────────
+    # pspm_resp_pp.m Stage 5 measures RA/RFR on the fully unfiltered `resp`
+    # trace -- signal_raw is this project's stand-in for `resp`, so it must
+    # not carry a highpass PsPM keeps out of that variable. The AIRFLOW_LOWPASS
+    # anti-alias step stays: CACHE_SFREQ's Nyquist (12.5 Hz at 25 Hz) is below
+    # AIRFLOW_LOWPASS (70 Hz), so this cutoff can't be realized after resample.
+    raw.apply_function(
+        lambda x: _butter_lowpass_filter(
+            x.astype(np.float64), config.AIRFLOW_LOWPASS,
+            native_sfreq, order=2),
+        picks=0, channel_wise=True, verbose=False)
+
+    raw.resample(sfreq=config.CACHE_SFREQ, npad="auto", verbose=False)
+
+    cache_sfreq = raw.info["sfreq"]
+    signal_raw  = raw.get_data(picks=0)[0]
+    times_raw   = raw.times
+
+    # Trigger sample indices are in native_sfreq space (from the un-resampled
+    # raw); convert to seconds here so they're valid regardless of CACHE_SFREQ.
+    trials_meta = []
+    for t in trials:
+        row = ratings_df.iloc[t["trial_index"]]
+        trials_meta.append({
+            "trial_index":        t["trial_index"],
+            "code_value":         t["code_value"],
+            "has_sound":          t["d110_sample"] is not None,
+            "d105_time":          t["d105_sample"] / native_sfreq,
+            "code_time":          t["code_sample"] / native_sfreq,
+            "d110_time":          (t["d110_sample"] / native_sfreq
+                                    if t["d110_sample"] is not None else None),
+            "baseline_range_sec": tuple(s / native_sfreq for s in t["baseline_range"]),
+            "response_range_sec": tuple(s / native_sfreq for s in t["response_range"]),
+            "subjective_label":   row.get("subjective_label", np.nan),
+            "image_type":         row.get("image_type", None),
+            "image_detail":       row.get("file_name", None),
+            "valence":            row.get("valenceRating", np.nan),
+            "arousal":            row.get("arousalRating", np.nan),
+        })
+
+    payload = {
+        "sfreq":       cache_sfreq,
+        "channel":     target_ch,
+        "signal_raw":  signal_raw,
+        "times_raw":   times_raw,
+        "trials_meta": trials_meta,
+        "d101_time":   d101_sample / native_sfreq,
+    }
+    return payload
+
+
+# ── STAGE 1 — Signal Conditioning (mixed: despike is a project addition; the
+# filter cascade/downsample below matches pspm_resp_pp.m) ──────────────────
 
 def despike_signal_raw(signal_raw, native_sfreq, k=50.0, max_run_sec=1.0):
     """Detect brief, extreme-amplitude samples in the native signal_raw and
@@ -120,7 +214,7 @@ def phase1_filter_downsample(signal_raw, native_sfreq, target_sfreq=10.0,
     return x10, target_sfreq
 
 
-# ── Phase 2 ───────────────────────────────────────────────────────────────────
+# ── STAGE 2 — Cycle Detection [PsPM-faithful] ───────────────────────────────
 
 def detect_cycles(raw_z, sfreq, signal_raw, native_sfreq,
                    median_win_sec=1.0, refractory_sec=1.0):
@@ -140,15 +234,13 @@ def detect_cycles(raw_z, sfreq, signal_raw, native_sfreq,
     pspm-respiration-audit skill for why this matters more for a flow sensor
     than for PsPM's bellows/chest-strap signal).
 
-    A cycle = time interval from one inspiration onset to the next.
-    E.g., if onsets are detected at t=[1s, 5s, 9s], cycles are [1→5s], [5→9s].
     Returns list of dicts with onset_time, assign_time, RP, RA, RFR."""
-    # STAGE 1/2 (mean-center + 0.01-0.6 Hz cascaded filters) already applied
-    # in phase1_filter_downsample -- raw_z arrives pre-filtered, matching
-    # pspm_resp_pp.m Stage 1 exactly (see that function's docstring). Only
-    # median-filtering + zero-crossing detection remain here.
+    # Bandpass+downsample already applied in phase1_filter_downsample --
+    # raw_z arrives pre-filtered, matching pspm_resp_pp.m Stage 1 exactly
+    # (see that function's docstring). Only median-filtering + zero-crossing
+    # detection remain here (still this function's own Stage 2 job).
 
-    # STAGE 3: Smooth with median filter, then detect zero-crossings
+    # Step 1: Smooth with median filter, then detect zero-crossings
     # Median filter removes wiggles so only true breath oscillations trigger crossings
     win = int(round(median_win_sec * sfreq))
     win = win + 1 if win % 2 == 0 else win  # Ensure odd kernel size
@@ -161,26 +253,23 @@ def detect_cycles(raw_z, sfreq, signal_raw, native_sfreq,
     signs[signs == 0] = 1  # Treat zero as positive
     cross_idx = np.flatnonzero((signs[:-1] > 0) & (signs[1:] < 0)) + 1
 
-    # STAGE 4: Enforce refractory period (minimum gap between onsets)
-    """
-    Default 1.0 sec = max 60 bpm. Keeps a candidate only if it's >= 1s
-    after the last KEPT onset (not the last candidate).
-    E.g. for onsets [0.0, 0.9, 1.7]: 0.9 is dropped (< 1s after 0.0), then
-    1.7 is kept (1.7s after 0.0) -> result [0.0, 1.7].
-    Deliberate deviation from pspm_resp_pp.m (lines 113-116), which checks
-    gaps between raw consecutive crossings instead of the last kept one,
-    and would have dropped 1.7 too just for sitting close to the
-    already-noisy 0.9.
-    """
+    # Step 2: Enforce refractory period (minimum gap between onsets)
+    # pspm_resp_pp.m lines 113-116: ibi = diff(respstamp); indx = find(ibi < 1);
+    # respstamp(indx + 1) = []. Single pass over the ORIGINAL candidate list --
+    # a candidate is dropped if its gap to the PRECEDING candidate (not the
+    # last kept one) is under refractory_sec. E.g. [0.0, 0.9, 1.7]: ibi =
+    # [0.9, 0.8], both < 1s -> both 0.9 and 1.7 dropped -> result [0.0].
     refractory_samples = refractory_sec * sfreq
-    onsets = []
-    last_onset = -np.inf
-    for idx in cross_idx:
-        if idx - last_onset >= refractory_samples:
-            onsets.append(idx)
-            last_onset = idx
+    cross_idx = np.asarray(cross_idx)
+    if len(cross_idx) > 1:
+        ibi = np.diff(cross_idx)
+        drop = np.zeros(len(cross_idx), dtype=bool)
+        drop[1:] = ibi < refractory_samples
+        onsets = cross_idx[~drop].tolist()
+    else:
+        onsets = cross_idx.tolist()
 
-    # STAGE 5: Extract features per cycle (each cycle = one breathing cycle).
+    # Step 3: Extract features per cycle (each cycle = one breathing cycle).
     # RP comes from the raw_z-clock onset times (detection only). RA/RFR are
     # measured on signal_raw at native_sfreq -- pspm_resp_pp.m line 140:
     # `win = ceil(respstamp(k)*sr) : ceil(respstamp(k+1)*sr)`. A MATLAB colon
@@ -211,7 +300,7 @@ def detect_cycles(raw_z, sfreq, signal_raw, native_sfreq,
     return cycles
 
 
-# ── Amplitude-spike gate (Hampel identifier) ──────────────────────────────────
+# ── STAGE 3 — Artifact Layer [PROJECT ADDITION] — Hampel amplitude gate ────
 
 def _hampel_flag_cycles(cycles, k):
     """Flag breathing cycles whose RA is an UPPER outlier by the Hampel
@@ -242,7 +331,7 @@ def _hampel_flag_cycles(cycles, k):
     return ras > (med + k * mad)
 
 
-# ── Dual-Detector Logic ───────────────────────────────────────────────────────
+# ── STAGE 3 — Artifact Layer [PROJECT ADDITION] — NK2 cross-check ──────────
 # detect_cycles: finds zero-crossings → produces RP/RA/RFR scores (but accepts noise)
 # NK2: validates real breathing exists (checks amplitude/structure)
 # Logic: If detect_cycles found cycles BUT NK2 found none → reject (artifact gate)
@@ -260,67 +349,21 @@ def _nk2_peak_trough_times(raw_z, sfreq, config):
     return peaks / sfreq, troughs / sfreq
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PHASE 2 → PHASE 3: Discrete Cycles to Continuous Series
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Phase 2 output: cycles[] list with discrete RP/RA/RFR values + timestamps
-#   Example: cycles = [
-#       {"RP": 4.0, "RA": 1.5, "RFR": 0.375, "assign_time": 5.0},
-#       {"RP": 4.2, "RA": 1.6, "RFR": 0.38,  "assign_time": 9.2},
-#       {"RP": 3.9, "RA": 1.4, "RFR": 0.36,  "assign_time": 13.1},
-#   ]
-#   (One point per breathing cycle, assigned to the FOLLOWING inspiration onset)
-#
-# Phase 3 converts this to continuous 10Hz series:
-#   1. Take (assign_time, RP/RA/RFR) pairs
-#   2. Interpolate linearly between them across the full session
-#   3. Filter with unidirectional bandpass to smooth
-#   Result: RP_series, RA_series, RFR_series — each 10 Hz, full session length
-#
-# Phase 4 uses these continuous series to fit per-trial GLM models.
+# ── STAGE 4 — Continuous Series (mixed: interpolation/filtering is a project
+# addition; the per-metric HP/LP cutoffs match PsPM's sensitivity filter) ──
 
+def build_continuous_series(cycles, n_samples, sfreq, hp=0.001, lp=1.0, missing_spans=None):
+    """Interpolate discrete per-cycle RP/RA/RFR knots (assign_time -> value) to a
+    continuous 10 Hz series, then apply a causal per-metric sensitivity filter.
 
-# ── Phase 3 ───────────────────────────────────────────────────────────────────
-
-def build_continuous_series(cycles, n_samples, sfreq, hp=0.001, lp=1.0):
-    """PHASE 3: Discrete Cycles → Continuous Feature Time Series
-
-    INPUT:  cycles[] list (from Phase 2, detect_cycles)
-      Example:
-        cycles = [
-          {"RP": 4.0, "RA": 1.5, "RFR": 0.375, "assign_time": 5.0},
-          {"RP": 4.2, "RA": 1.6, "RFR": 0.38,  "assign_time": 9.2},
-          {"RP": 3.9, "RA": 1.4, "RFR": 0.36,  "assign_time": 13.1},
-        ]
-
-    OUTPUT: series (dict), times_full (array)
-      series = {
-          "RP": [4.0, 4.05, 4.1, 4.15, ...],  # 10Hz RP time series (full session)
-          "RA": [1.5, 1.55, 1.6, 1.65, ...],  # 10Hz RA time series
-          "RFR": [0.375, 0.378, 0.38, ...],   # 10Hz RFR time series
-      }
-      times_full = [0.0, 0.1, 0.2, 0.3, ...]  # Time labels (10Hz = 0.1s intervals)
-
-    PROCESS:
-      1. Extract (assign_time, RP/RA/RFR) pairs from cycles
-      2. Linearly interpolate to 10Hz for full session length
-         (fills gaps between discrete cycle measurements)
-      3. Filter with unidirectional bandpass (per-metric high-pass, 1 Hz low-pass)
-         RP high-pass 0.01 Hz, RA/RFR 0.001 Hz (PsPM parity, see hp arg below)
-         Removes DC (mean breathing rate) + jitter; preserves causality
-      4. Returns three smooth time series + time array
-
-    WHY: Phase 4 GLM fitting needs continuous time series to match trial windows
-         against canonical response functions. Not reconstructing waveform shape,
-         but reconstructing how breathing *features* (RP/RA/RFR) evolve in time.
+    WHY: GLM fitting needs continuous time series to match trial windows against
+    canonical response functions -- not reconstructing waveform shape, but
+    reconstructing how breathing *features* (RP/RA/RFR) evolve in time.
     """
-    # Build time array for full session at 10 Hz
     times_full = np.arange(n_samples) / sfreq
     series = {}
 
     # Unidirectional bandpass "sensitivity filter" (from the paper).
-    # High-pass removes DC (mean rate); low-pass (1 Hz) removes jitter.
     # `hp` may be a scalar (same cutoff for all three metrics) OR a per-metric
     # dict {"RP":.., "RA":.., "RFR":..}: PsPM uses 0.01 Hz for RP and 0.001 Hz
     # for RA/RFR (see GLM_FINAL_HP in airflow_config.py). The low-pass is shared.
@@ -328,7 +371,6 @@ def build_continuous_series(cycles, n_samples, sfreq, hp=0.001, lp=1.0):
     nyq = sfreq / 2.0
 
     for metric in ("RP", "RA", "RFR"):
-        # Handle edge case: fewer than 2 cycles
         if len(cycles) < 2:
             series[metric] = np.full(n_samples, np.nan)
             continue
@@ -336,101 +378,66 @@ def build_continuous_series(cycles, n_samples, sfreq, hp=0.001, lp=1.0):
         hp_m = hp[metric] if isinstance(hp, dict) else hp
         b, a = butter(1, [hp_m / nyq, lp / nyq], btype="band")
 
-        # Extract (time, value) pairs for this metric
-        # assign_time = where each cycle's value is assigned (following onset)
         knot_t = np.array([c["assign_time"] for c in cycles])
         knot_v = np.array([c[metric] for c in cycles])
-
-        # Sort by time (ensure monotonic for interpolation)
         order = np.argsort(knot_t)
         knot_t, knot_v = knot_t[order], knot_v[order]
-
-        # Linearly interpolate discrete cycle values to 10 Hz continuous series
-        # (extend to edges with first/last value)
         interp = np.interp(times_full, knot_t, knot_v, left=knot_v[0], right=knot_v[-1])
+        filtered = lfilter(b, a, interp)
 
-        # Apply unidirectional sensitivity filter
-        # (removes DC and high-frequency jitter while preserving onset timing)
-        series[metric] = lfilter(b, a, interp)
+        # Blank out dropped-cycle spans AFTER filtering (PsPM model.missing):
+        # the interpolated line was needed only to keep the causal IIR filter's
+        # recursion well-behaved; NaN'ing pre-filter would poison every sample
+        # after it via the filter's own feedback. fit_trial_glm/
+        # fit_pooled_session_glm already mask NaN out of their regressions.
+        if missing_spans:
+            for start_t, end_t in missing_spans:
+                mask = (times_full >= start_t) & (times_full < end_t)
+                filtered[mask] = np.nan
+
+        series[metric] = filtered
 
     return series, times_full
 
 
-# ── Phase 4 ───────────────────────────────────────────────────────────────────
-# Per-Trial GLM Fitting: Solve Linear System for Each Trial
-#
-# SCOPE: Phase 4 runs ONCE PER TRIAL (not session-wide)
-#
-# For each trial:
-#   INPUT:  y_window = trial's RP/RA/RFR time series (e.g., 150 samples)
-#           tw = time array (relative to trial onset)
-#           metric = "RP", "RA", or "RFR"
-#
-#   BUILD design matrix X:
-#     X = [intercept | CRF_template | CRF_derivative]
-#       column 0: all 1s (intercept β₀)
-#       column 1: template curve (CRF)
-#       column 2: template derivative (optional, for RA/RFR)
-#     Shape: (150 × 3)
-#
-#   SOLVE linear system: β = pinv(X) @ y_window
-#     Find β that minimizes ||y_window - X @ β||²
-#     Result: β = [β₀, β₁, β₂]
-#
-#   EXTRACT SCORE: β₁ (the template coefficient)
-#     β₁ = 2.0  → trial response 2× template strength
-#     β₁ = 0.5  → trial response 0.5× template strength
-#     β₁ ≈ 0    → no response (trial doesn't match template)
-#     β₁ < 0    → opposite direction
-#
-#   OUTPUT: score_rp, score_ra, score_rfr (one β₁ per metric)
-
+# ── STAGE 5 — GLM Fit [PsPM-faithful] ───────────────────────────────────────
 
 def generate_canonical_rf(metric, rf_params, tw):
-    """Generate the expected response template for this metric.
-
-    Canonical Response Function (CRF): Gaussian curve
-      h(t) = exp(-(t-τ)² / (2σ²))
-
-    Interpretation:
-      τ = peak time (seconds after trigger when response is strongest)
-      σ = spread (how wide the response window is)
+    """Canonical Response Function: Gaussian h(t) = exp(-(t-τ)² / (2σ²)).
 
     IMPORTANT: `tw` is the trial's FULL time window -- every sample from
     baseline start through response end (see fit_trial_glm below), not just
-    a single instant. This function evaluates the Gaussian at EVERY one of
-    those time points, so the template is a whole curve (rises toward τ,
-    peaks at τ, falls away afterward) that the fit will compare against the
-    whole observed curve -- τ is just where this particular curve happens
-    to peak, not the only point that matters.
-
-    INPUT:  metric ("RP", "RA", "RFR"), rf_params (config dict), tw (time array)
-    OUTPUT: CRF curve evaluated at each time point in tw
+    a single instant. The template is a whole curve (rises toward τ, peaks at
+    τ, falls away afterward) compared against the whole observed curve -- τ
+    is just where this curve happens to peak, not the only point that matters.
     """
     tau, sigma = rf_params[metric]
     return np.exp(-((tw - tau) ** 2) / (2 * sigma ** 2))
 
 
+def _spm_orth_columns(bs):
+    """Serial Gram-Schmidt (spm_orth.m), no renormalization -- used for the
+    post-convolution orthogonalization pspm_glm.m §14.4 applies to the convolved
+    [CRF, dCRF] columns per condition. Column 0 kept as-is; each later column has
+    its least-squares projection onto the earlier kept columns removed; a column
+    that collapses to ~0 (collinear) is zeroed (spm_orth 'pad' default)."""
+    n_cols = bs.shape[1]
+    cols = [bs[:, 0].copy()]
+    for i in range(1, n_cols):
+        d = bs[:, i].copy()
+        x = np.column_stack(cols)
+        d = d - x @ (np.linalg.pinv(x) @ d)
+        cols.append(d if np.sum(np.abs(d)) > 1e-12 else np.zeros_like(d))
+    return np.column_stack(cols)
+
+
 def orthogonalize_and_normalize_basis(bs):
-    """Mirrors PsPM's spm_orth.m + the normalization line every pspm_bf_r*rf_e.m
-    basis function applies before returning: `bs = spm_orth(bs); bs = bs ./
-    (max(bs) - min(bs))`. Applied to [CRF, dCRF/dt] ONLY -- the intercept
-    column is added separately by the caller and is never orthogonalized
-    against these, matching PsPM (spm_orth runs inside the basis-function
-    file, before pspm_glm ever adds an intercept to the design matrix).
-
-    Serial Gram-Schmidt (spm_orth.m lines 36-46): column 1 is kept as-is;
-    each later column has its projection onto all earlier (already-kept)
-    columns subtracted out, via `D - x @ (pinv(x) @ D)` -- i.e. the
-    least-squares projection of D onto the span of x, removed. A column
-    that becomes ~zero after that (collinear with earlier ones) is zeroed
-    out (`norm(D,1) > exp(-32)` in the original; mirrored here) rather than
-    kept, matching spm_orth's 'pad' default.
-
-    Then every column (including the untouched first one) is rescaled to
-    unit range (max - min), matching the normalization line that runs
-    after spm_orth in every pspm_bf_r*rf_e.m file.
-    """
+    """spm_orth.m (see _spm_orth_columns) + the unit-range normalization line
+    every pspm_bf_r*rf_e.m basis function applies before returning: `bs =
+    spm_orth(bs); bs = bs ./ (max(bs) - min(bs))`. Applied to [CRF, dCRF/dt]
+    ONLY -- the intercept column is added separately by the caller and is
+    never orthogonalized against these, matching PsPM (spm_orth runs inside
+    the basis-function file, before pspm_glm ever adds an intercept)."""
     n_cols = bs.shape[1]
     ortho_cols = [bs[:, 0].copy()]
     for i in range(1, n_cols):
@@ -450,54 +457,18 @@ def orthogonalize_and_normalize_basis(bs):
 
 
 def fit_trial_glm(y_window, tw, metric, rf_params, use_derivative):
-    """Solve: y_actual = β₀ + β₁·CRF(t) + β₂·dCRF/dt
+    """Solve y_actual = β₀ + β₁·CRF(t) + β₂·dCRF/dt over the trial's ENTIRE
+    [baseline_start, response_end) window (see run_glm_scoring: i0 =
+    baseline_range_sec[0], i1 = response_range_sec[1] -- the full epoch, not
+    a peak-only slice). Every point in y_window contributes to the
+    least-squares fit, and the CRF template spans that same whole window, so
+    a high score (β₁) requires the OBSERVED curve's whole shape -- not just
+    its highest point -- to track the template's rise-peak-fall pattern. A
+    trial with a big peak at the wrong time will NOT automatically score high.
 
-    For this trial, find β₀, β₁, β₂ that make the equation fit the data.
-
-    *** SCORING METHOD -- READ THIS BEFORE TRUSTING score_rp/score_ra/score_rfr ***
-
-    This is a regression over the trial's ENTIRE [baseline_start, response_end)
-    window (see run_glm_scoring: i0 = baseline_range_sec[0], i1 =
-    response_range_sec[1] -- the full epoch, not a peak-only slice), not a
-    read-off of one peak sample. Every point in y_window contributes to the
-    least-squares fit (`pinv(X) @ y_window` uses ALL rows of X and y_window
-    together, in one solve). The CRF template (see generate_canonical_rf) also
-    spans that whole window -- it rises toward its peak, peaks at τ seconds
-    post-onset, then falls away -- so a high score requires the OBSERVED
-    curve's whole shape (not just its highest point) to track that same
-    rise-peak-fall pattern across the full window. A trial that hits a big
-    peak at the wrong time, or has a big peak surrounded by a shape that
-    doesn't otherwise resemble the template, will NOT automatically score
-    high just because the peak sample is large.
-
-    β₀ (intercept) absorbs the pre-stimulus baseline level, so the score
-    (β₁) reflects the template-matching strength AFTER accounting for
-    wherever the trial's own baseline sits -- not the raw response magnitude.
-
-    INPUT:   y_window = observed RP/RA/RFR time series, over the FULL trial
-             window (baseline start -> response end), not just the response
-             half and not just a peak
-             tw = time array, same full-window span as y_window
-             metric, rf_params, use_derivative = CRF config
-
-    SOLVE via regression:
-      β = pinv(X) @ y_window    (where X = [intercept | CRF | derivative])
-      Result: β = [β₀, β₁, β₂]
-
-    PREDICT: Once we have β, calculate predictions at each time point
-      fitted = X @ β = β₀ + β₁·CRF(t) + β₂·dCRF(t)
-
-    EXAMPLE:
-      Actual:      [1.0, 1.2, 1.5, 1.8, 1.9, 1.7, 1.4, 1.1, 0.9, 0.8]
-      Solved β:    β₀=0.5, β₁=1.8, β₂=0.3
-      Predicted:   [0.52, 0.78, 1.15, 1.65, 1.95, 2.00, 1.75, 1.25, 0.78, 0.55]
-                   (β₁=1.8 means template needed 1.8× strength, fit across
-                   ALL 10 points shown -- not derived from any single one)
-
-    OUTPUT:
-      beta_rf = 1.8              (THE SCORE: template-matching strength over
-                                   the whole window, not a peak value)
-      fitted_curve = [0.52, ...] (predictions: for diagnostic plots)
+    β₀ (intercept) absorbs the pre-stimulus baseline level, so β₁ reflects
+    template-matching strength after accounting for the trial's own baseline,
+    not raw response magnitude.
     """
     reg = generate_canonical_rf(metric, rf_params, tw)
     bf_cols = [reg]
@@ -514,21 +485,12 @@ def fit_trial_glm(y_window, tw, metric, rf_params, use_derivative):
     if valid.sum() < X.shape[1] + 1:
         return np.nan, None
 
-    # SOLVE: Find β that minimizes error
     beta = np.linalg.pinv(X[valid]) @ y_window[valid]
-    # Result: beta = [β₀, β₁, β₂] — the coefficients
-
-    # PREDICT: What does the model predict at each time point?
-    # fitted = X @ beta = [1, CRF, dCRF] @ [β₀, β₁, β₂]
-    #        = β₀ + β₁·CRF(t) + β₂·dCRF(t) at each time point
-    # Shape: same as y_window (array of predicted values)
     fitted = X @ beta
-
-    # Return β₁ (the score) and predictions (for plotting)
     return float(beta[1]), fitted
 
 
-# ── Pooled session-wide GLM (PsPM pspm_glm.m architecture) ────────────────────
+# ── STAGE 5 — GLM Fit [PsPM-faithful] — pooled session-wide (pspm_glm.m) ───
 
 def fit_pooled_session_glm(trials, series, sfreq, config, kernel_dur_sec=30.0):
     """PsPM's pooled, session-wide GLM (pspm_glm.m), as an alternative to the
@@ -590,11 +552,18 @@ def fit_pooled_session_glm(trials, series, sfreq, config, kernel_dur_sec=30.0):
             cols.append(np.gradient(crf, tk))
         basis = orthogonalize_and_normalize_basis(np.column_stack(cols))
 
+        # Per-metric causal sensitivity high-pass for the DESIGN matrix
+        # (pspm_glm.m §14.2, L577-579: convolved columns are high-pass filtered
+        # with the modality filter, low-pass OFF; the data got HP+LP in
+        # build_continuous_series). Matches the per-modality HP split.
+        hp_m = config.GLM_FINAL_HP[metric] if isinstance(config.GLM_FINAL_HP, dict) else config.GLM_FINAL_HP
+        b_hp, a_hp = butter(1, hp_m / (sfreq / 2.0), btype="high")
+
         # One event train per condition (valence label); one design column per
         # (condition, basis-column). col_is_crf[j] marks the score-bearing column.
         onsets_by_cond = {}
         for t in accepted:
-            onsets_by_cond.setdefault(t["label"], []).append(t["onset_time"])
+            onsets_by_cond.setdefault(t["condition"], []).append(t["onset_time"])
 
         reg_cols, col_cond, col_is_crf = [], [], []
         for cond in sorted(onsets_by_cond):
@@ -603,25 +572,33 @@ def fit_pooled_session_glm(trials, series, sfreq, config, kernel_dur_sec=30.0):
                 idx = int(round(ot * sfreq))
                 if 0 <= idx < n_samples:
                     delta[idx] = 1.0
+            # Build this condition's convolved block, then follow PsPM's order:
+            # convolve (§14.2) -> HP filter (§14.2) -> mean-centre (§14.3) ->
+            # orthogonalize the CRF/dCRF columns against each other (§14.4).
+            block_cols = []
             for bi in range(basis.shape[1]):
                 # np.convolve places the kernel's first sample (t=kernel_start) at
                 # each impulse; slice from onset_off so output[p] holds the kernel
                 # at relative time (p - onset)/sfreq, i.e. onset aligned to t=0.
                 conv = np.convolve(delta, basis[:, bi])[onset_off:onset_off + n_samples]
-                reg_cols.append(conv)
+                conv = lfilter(b_hp, a_hp, conv)          # §14.2 design HP (causal)
+                conv = conv - conv.mean()                 # §14.3 mean-centering
+                block_cols.append(conv)
+            block = np.column_stack(block_cols)
+            if block.shape[1] > 1:
+                block = _spm_orth_columns(block)          # §14.4 post-conv orth
+            for bi in range(block.shape[1]):
+                reg_cols.append(block[:, bi])
                 col_cond.append(cond)
                 col_is_crf.append(bi == 0)
 
         beta_by_cond = {c: np.nan for c in onsets_by_cond}
         full_fitted = None
         if reg_cols:
-            Xr = np.column_stack(reg_cols)
+            Xr = np.column_stack(reg_cols)   # columns already HP-filtered + centred
             valid = np.isfinite(y) & np.all(np.isfinite(Xr), axis=1)
             if valid.sum() >= Xr.shape[1] + 2:
-                # PsPM model.centering=1: mean-centre convolved columns, then
-                # prepend the intercept (which absorbs the mean level, §3).
-                Xc = Xr - Xr[valid].mean(axis=0, keepdims=True)
-                X = np.column_stack([np.ones(n_samples), Xc])
+                X = np.column_stack([np.ones(n_samples), Xr])
                 beta = np.linalg.pinv(X[valid]) @ y[valid]
                 for j in range(len(col_cond)):
                     if col_is_crf[j]:
@@ -629,21 +606,17 @@ def fit_pooled_session_glm(trials, series, sfreq, config, kernel_dur_sec=30.0):
                 full_fitted = X @ beta
 
         for t in accepted:
-            t[f"score_{metric.lower()}"] = beta_by_cond.get(t["label"], np.nan)
+            t[f"score_{metric.lower()}"] = beta_by_cond.get(t["condition"], np.nan)
             if metric == "RA":
                 i0, i1 = t["win_start_idx"], t["win_end_idx"]
                 t["series_ra"] = y[i0:i1]
                 t["fitted_ra"] = full_fitted[i0:i1] if full_fitted is not None else None
 
 
-# ── Orchestrator ──────────────────────────────────────────────────────────────
+# ── STAGE 6 — Orchestration & Rejection Gates [PROJECT ADDITION] ───────────
 
 def run_glm_scoring(sessions_cache, config):
-    """Run all 4 phases of GLM pipeline on cached data.
-
-    Phases: 1) Filter → 2) Detect cycles → 3) Interpolate → 4) Fit GLM per trial
-
-    INPUT:  sessions_cache (Layer 1 cache: 25Hz signal + trial metadata)
+    """INPUT:  sessions_cache (Layer 1 cache: 25Hz signal + trial metadata)
     OUTPUT: trials_data[subj][sess_key] = list of trial dicts with:
               • score_rp, score_ra, score_rfr (β₁ values)
               • rejected, rejection_reason
@@ -651,6 +624,7 @@ def run_glm_scoring(sessions_cache, config):
     """
     trials_data = {}
     traces = {}
+    qc_info = {}
     subjects_exclude = getattr(config, "SUBJECTS_EXCLUDE", {})
     artifact_method  = getattr(config, "GLM_ARTIFACT_METHOD", "hampel_reject_trials")
     artifact_k       = getattr(config, "GLM_ARTIFACT_K", 3.5)
@@ -667,6 +641,7 @@ def run_glm_scoring(sessions_cache, config):
             continue
         trials_data[subj] = {}
         traces[subj] = {}
+        qc_info[subj] = {}
 
         for sess_key, sess in sess_dict.items():
             if f"{subj}/{sess_key}" in subjects_exclude:
@@ -675,20 +650,34 @@ def run_glm_scoring(sessions_cache, config):
             native_sfreq = float(sess["sfreq"])
             trials_meta  = sess["trials_meta"]
 
+            qc_enabled = getattr(config, "QC_ENABLED", False)
+            qc_spans = []
+            if qc_enabled:
+                qc = airflow_qc.qc_session(signal_raw, native_sfreq, config)
+                signal_for_pipeline = qc["signal_clean"]
+                qc_spans = list(qc["masked_spans"])
+                qc_info[subj][sess_key] = {
+                    "breath_size": qc["breath_size"],
+                    "masked_spans": qc_spans,
+                    "masked_sec": qc["masked_sec"],
+                }
+            else:
+                signal_for_pipeline = signal_raw
+
             raw_z, sfreq = phase1_filter_downsample(
-                signal_raw, native_sfreq,
+                signal_for_pipeline, native_sfreq,
                 target_sfreq=config.GLM_TARGET_SFREQ,
                 bp_low=config.GLM_CYCLE_BANDPASS[0],
                 bp_high=config.GLM_CYCLE_BANDPASS[1],
                 zscore=config.GLM_ZSCORE_RAW,
-                despike=getattr(config, "GLM_DESPIKE_ENABLED", True),
+                despike=(not qc_enabled) and getattr(config, "GLM_DESPIKE_ENABLED", True),
                 despike_k=getattr(config, "GLM_DESPIKE_K", 50.0),
                 despike_max_run_sec=getattr(config, "GLM_DESPIKE_MAX_RUN_SEC", 1.0),
             )
             n_samples = len(raw_z)
 
             cycles = detect_cycles(
-                raw_z, sfreq, signal_raw, native_sfreq,
+                raw_z, sfreq, signal_for_pipeline, native_sfreq,
                 median_win_sec=config.GLM_MEDIAN_WIN_SEC,
                 refractory_sec=config.GLM_REFRACTORY_SEC,
             )
@@ -705,17 +694,48 @@ def run_glm_scoring(sessions_cache, config):
             #   skip above (which now applies to every method, not just this
             #   one) -- leaves surviving sessions' cycles/results unchanged.
             flagged_onset_times = []
+            missing_spans = list(qc_spans)
+
+            max_ratio = getattr(config, "QC_MAX_BREATH_RATIO", None)
+            if max_ratio is not None:
+                deep = airflow_qc.flag_deep_breaths(cycles, max_ratio)
+                missing_spans += [(c["onset_time"], c["assign_time"])
+                                  for c, bad in zip(cycles, deep) if bad]
+                cycles = [c for c, bad in zip(cycles, deep) if not bad]
+                if subj in qc_info and sess_key in qc_info[subj]:
+                    qc_info[subj][sess_key]["deep_breaths"] = int(deep.sum())
             if artifact_method in ("hampel_drop_cycles", "hampel_reject_trials"):
                 flags = _hampel_flag_cycles(cycles, artifact_k)
                 if artifact_method == "hampel_drop_cycles":
+                    # extend, not replace: qc_spans are already in missing_spans
+                    # Dropped cycle's own [onset, assign) span is where its RA/RP/RFR
+                    # were measured -- that's what's untrustworthy, not the
+                    # surrounding real breaths used to bridge the interpolation.
+                    missing_spans += [(c["onset_time"], c["assign_time"])
+                                      for c, bad in zip(cycles, flags) if bad]
                     cycles = [c for c, bad in zip(cycles, flags) if not bad]
                 else:  # hampel_reject_trials
                     flagged_onset_times = [c["onset_time"]
                                            for c, bad in zip(cycles, flags) if bad]
 
+            # Session crop: GLM_PRE_FIXATION_SEC before the first trial's own
+            # fixation onset (d105_time) through GLM_POST_CODE_SEC after the
+            # last trial's picture-code onset (code_time) -- everything outside
+            # this span is excluded from the pooled-session GLM's design/data.
+            d105_times = [m["d105_time"] for m in trials_meta if m.get("d105_time") is not None]
+            code_times = [m["code_time"] for m in trials_meta if m.get("code_time") is not None]
+            win_start = win_end = None
+            if d105_times and code_times:
+                win_start = min(d105_times) - config.GLM_PRE_FIXATION_SEC
+                win_end   = max(code_times) + config.GLM_POST_CODE_SEC
+                n_samples = min(n_samples, int(np.ceil(max(win_end, 0.0) * sfreq)))
+                if win_start > 0:
+                    missing_spans = missing_spans + [(0.0, win_start)]
+
             series, times_full = build_continuous_series(
                 cycles, n_samples, sfreq,
                 hp=config.GLM_FINAL_HP, lp=config.GLM_FINAL_LP,
+                missing_spans=missing_spans,
             )
 
             # NK2 cross-check for no_cycles_found -- same detector/config the
@@ -727,6 +747,11 @@ def run_glm_scoring(sessions_cache, config):
                                    if m["d110_time"] is not None])
             traces[subj][sess_key] = {
                 "signal": raw_z, "sfreq": sfreq, "startle_samps_sec": d110_secs,
+                "qc": qc_info[subj].get(sess_key),
+                "signal_clean": signal_for_pipeline, "native_sfreq": native_sfreq,
+                "scored_n_samples": n_samples,
+                "scored_start_sec": win_start,
+                "scored_end_sec": win_end,
             }
 
             trials = []
@@ -758,13 +783,16 @@ def run_glm_scoring(sessions_cache, config):
                     if cycles_in_window else np.nan
                 )
 
-                # cycle_gap input: longest dead stretch anywhere in the window,
-                # including window-start -> first onset and last onset ->
-                # window-end (a real cycle at each edge doesn't rule out a long
-                # dead middle -- see config). Absolute floor, not session-relative.
-                onset_edges = np.array(
-                    [b0] + [c["onset_time"] for c in cycles_in_window] + [r1])
-                max_gap_sec = float(np.max(np.diff(onset_edges)))
+                # cycle_gap input: longest dead stretch BETWEEN detected onsets.
+                # Window-edge segments (window-start -> first onset, last onset ->
+                # window-end) are deliberately excluded: a window boundary landing
+                # mid-breath is not an apnea, and including those edges fabricated
+                # >12 s "gaps" in normally-breathing trials (rmax ~16 bpm) that the
+                # manual flags mark as good (extras/trials_flagged). Trials with <2
+                # detected onsets get NaN here and fall to no_cycles_found/flat_*.
+                onset_times = [c["onset_time"] for c in cycles_in_window]
+                max_gap_sec = (float(np.max(np.diff(onset_times)))
+                               if len(onset_times) >= 2 else np.nan)
 
                 # NK2 cross-check: real pre-onset peak (baseline) AND real
                 # post-onset trough-then-peak (response) -- same has_cycles
@@ -821,28 +849,9 @@ def run_glm_scoring(sessions_cache, config):
 
 
 def _run_glm_analysis(trials, raw_z, series, sfreq, config):
-    """Run Phase 4: per-trial GLM fitting (two passes).
-
-    INPUT:  trials (list of trial dicts, pre-populated with metadata + windows)
-            raw_z (z-scored signal)
-            series (dict: RP_series, RA_series, RFR_series — Phase 3 output)
-            sfreq, config
-
-    PASS 1: Session-level preprocessing
-      • Resolve trial labels (subjective vs image metadata)
-      • Compute session-level baseline stats (median std, std of stds)
-      • Build shape-centroid matrix (for atypical_shape rejection gate)
-
-    PASS 2: Per-trial GLM fitting
-      • For EACH trial:
-        - Build design matrix X = [intercept | CRF | dCRF/dt]
-        - Solve: β = pinv(X) @ y_window (for each metric RP/RA/RFR)
-        - Extract β₁ = score_rp, score_ra, score_rfr
-        - Apply rejection gates
-        - Store results in trial dict
-
-    OUTPUT: Modifies trials[] in-place (adds scores, rejection flags, diagnostics)
-    """
+    """PASS 1: labels, per-trial baseline stats, session-level stats, shape
+    centroid. PASS 2: rejection gates, then (per_trial estimation only) the
+    per-trial GLM fit. Modifies trials[] in-place."""
     if not trials:
         return
 
@@ -861,6 +870,11 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
                 t["label"] = 2
             else:
                 t["label"] = t["subjective_label"]
+
+        if getattr(config, "GLM_CONDITION_FIELD", "label") == "has_sound":
+            t["condition"] = 1 if t["has_sound"] else 2   # 1=Sound, 2=No-sound
+        else:
+            t["condition"] = t["label"]                     # 1=Negative, 2=Neutral
 
         i0, i1 = t["win_start_idx"], t["win_end_idx"]
         tw = t["times_wide"]
@@ -881,7 +895,12 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
         # raw cycle periods (not the Phase-3 filtered series -- see there).
 
     sess_std_median = float(np.nanmedian(bl_stds)) if bl_stds else np.nan
-    sess_std_std    = float(np.nanstd(bl_stds))    if bl_stds else np.nan
+    if getattr(config, "QC_ROBUST_GATES", False):
+        _v = np.asarray(bl_stds, dtype=float)
+        _v = _v[np.isfinite(_v)]
+        sess_std_std = (airflow_qc.robust_sd(_v) if _v.size else np.nan)
+    else:
+        sess_std_std = float(np.nanstd(bl_stds)) if bl_stds else np.nan
 
     # ══ SHAPE-CENTROID OUTLIER DETECTION (reused verbatim on raw_z windows) ═══
     shape_enable    = getattr(config, "AIRFLOW_SHAPE_REJECTION_ENABLE", True)
@@ -910,8 +929,10 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
             Mz = (M - row_means) / row_stds
             centroid = Mz.mean(axis=0)
             msd = np.mean((Mz - centroid) ** 2, axis=1)
-            msd_mean, msd_std = float(np.nanmean(msd)), float(np.nanstd(msd))
-            shape_cutoff = msd_mean + shape_threshold * msd_std
+            if getattr(config, "QC_ROBUST_GATES", False):
+                shape_cutoff = airflow_qc.robust_cutoff(msd, shape_threshold)
+            else:
+                shape_cutoff = float(np.nanmean(msd)) + shape_threshold * float(np.nanstd(msd))
             for row_i, trial_i in enumerate(shape_row_idxs):
                 shape_msd[trial_i] = float(msd[row_i])
 
@@ -921,12 +942,16 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
         tw = t["times_wide"]
         bs, rs = t["baseline_std"], t["response_std"]
 
-        # Reject if EITHER detector finds no real cycle here: the custom
-        # zero-crossing detector found literally none, OR NK2's validated
-        # khodadad2018 detector disagrees that a real breath exists in this
-        # window (catches flat traces / step artifacts the custom detector's
-        # lack of an amplitude floor would otherwise accept -- see config).
-        no_cycles_reject = t["n_cycles_in_window"] == 0 or not t["nk2_has_cycles"]
+        # Reject if EITHER detector finds too few cycles here: the custom
+        # zero-crossing detector found fewer than GLM_MIN_CYCLES_IN_WINDOW (a
+        # 13-20 s window with <2 onsets can't yield even one respiration period
+        # -- these are the ncyc<=1 trials the manual flags mark bad, previously
+        # caught only incidentally by the cycle_gap edge artifact), OR NK2's
+        # validated khodadad2018 detector disagrees that a real breath exists
+        # (catches flat traces / step artifacts the custom detector's lack of
+        # an amplitude floor would otherwise accept -- see config).
+        min_cycles = getattr(config, "GLM_MIN_CYCLES_IN_WINDOW", 2)
+        no_cycles_reject = t["n_cycles_in_window"] < min_cycles or not t["nk2_has_cycles"]
 
         z_threshold = getattr(config, "GLM_Z_SCORE_THRESHOLD", None)
         z_reject = (bool((bs - sess_std_median) / sess_std_std > z_threshold)
@@ -971,6 +996,18 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
         # flag is precomputed in run_glm_scoring (see config.GLM_ARTIFACT_METHOD).
         amp_reject = bool(t.get("amp_artifact", False))
 
+        min_knots = getattr(config, "QC_MIN_KNOTS", None)
+        knot_reject = (bool(t["n_cycles_in_window"] < min_knots)
+                       if min_knots is not None else False)
+
+        min_valid = getattr(config, "QC_MIN_VALID_FRACTION", None)
+        cov_reject = False
+        if min_valid is not None:
+            _y = series[config.GLM_PRIMARY_METRIC][i0:i1] \
+                 if config.GLM_PRIMARY_METRIC in series else None
+            if _y is not None and len(_y):
+                cov_reject = bool(np.mean(np.isfinite(_y)) < min_valid)
+
         reasons = []
         if no_cycles_reject: reasons.append("no_cycles_found")
         if z_reject:         reasons.append("noisy_baseline")
@@ -980,6 +1017,8 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
         if shape_reject:     reasons.append("atypical_shape")
         if gap_reject:       reasons.append("cycle_gap")
         if amp_reject:       reasons.append("amplitude_artifact")
+        if knot_reject:      reasons.append("low_information")
+        if cov_reject:       reasons.append("low_coverage")
 
         t["rejected"]         = bool(reasons)
         t["rejection_reason"] = ", ".join(reasons) if reasons else ""
@@ -991,12 +1030,6 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
         if t["rejected"]:
             t["score_rp"] = t["score_ra"] = t["score_rfr"] = np.nan
         elif estimation == "per_trial":
-            # ── Per-trial GLM fitting: Solve linear system for each metric ──
-            # For this trial, we have:
-            #   y_win = observed RP/RA/RFR time series (extracted from continuous series)
-            #   tw = time array for this trial window
-            # For each metric, solve: y_win = β₀ + β₁·CRF(t) + β₂·dCRF/dt
-            # Extract β₁ as the SCORE for this trial/metric
             for metric in ("RP", "RA", "RFR"):
                 y_win = series[metric][i0:i1]
                 beta, fitted = fit_trial_glm(y_win, tw, metric,
@@ -1010,9 +1043,6 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
         # single session-wide solve (fit_pooled_session_glm), since a pooled beta
         # depends on ALL accepted trials at once, not just this one.
 
-    # ── PsPM pooled session-wide GLM (config.GLM_ESTIMATION="pooled_session") ──
-    # One design matrix for the whole session, one solve per metric -> one beta
-    # per condition, written back onto each accepted trial (see the function).
     if estimation == "pooled_session":
         fit_pooled_session_glm(trials, series, sfreq, config)
 

@@ -1,153 +1,33 @@
-# airflow_demo_processor.py — stateless processing for the Airflow pipeline (Demo/Testing).
+# airflow_amp_processor.py — Layer 2 (BxB/legacy) scoring for the Airflow pipeline.
 #
-# ── Cache architecture ─────────────────────────────────────────────────────────
+# Layer 1 (process_session: MFF -> bandpass-filtered, downsampled raw signal +
+# trial metadata, cached to pickle) now lives in airflow_glm.py, shared by both
+# the GLM (primary) and this BxB (secondary/legacy) path via airflow_main.py.
+# This module contains only Layer 2:
 #
-# Layer 1  process_session()       MFF -> bandpass-filtered raw signal
-#                                  (downsampled) + trial metadata. Written to
-#                                  pickle. The 0.01-70 Hz Butterworth bandpass
-#                                  (AIRFLOW_HIGHPASS/AIRFLOW_LOWPASS) runs here,
-#                                  at native rate, before resampling. No NK2.
+# apply_analysis_params() —
+#   - NK2 feature extraction (peaks/troughs/rate/amplitude) on the
+#     already-filtered full session signal; NK2's own cleaning is
+#     disabled (RSP_PEAK_METHOD_CLEANING="none") so it isn't a
+#     second bandpass filter
+#   - Epoch cutting at the ground-truth trial boundaries from trial_epochs.py
+#   - Baseline, rejection, scoring
+#   Returns (trials_data, traces). Never touches the MFF.
 #
-# Layer 2  apply_analysis_params() Everything else:
-#            - NK2 feature extraction (peaks/troughs/rate/amplitude) on the
-#              already-filtered full session signal; NK2's own cleaning is
-#              disabled (RSP_PEAK_METHOD_CLEANING="none") so it isn't a
-#              second bandpass filter
-#            - Epoch cutting at the ground-truth trial boundaries from trial_epochs.py
-#            - Baseline, rejection, scoring
-#          Returns (trials_data, traces). Never touches the MFF.
-#
-# What requires FORCE_RELOAD (Layer 1 changes):
-#   AIRFLOW_CHANNEL, CACHE_SFREQ, AIRFLOW_HIGHPASS, AIRFLOW_LOWPASS
-#
-# What is free to change in the notebook (Layer 2):
+# What is free to change here (Layer 2 only):
 #   RSP_CLEAN_METHOD / RSP_PEAK_METHOD_CLEANING, all rejection gates,
 #   AIRFLOW_SCORE_MAX, USE_SUBJECTIVE_TRIAL_TYPE
 #
 # Epoch/baseline/response window timing is NOT a free parameter anymore. It is
 # ground truth derived from the D105 -> D{trigger_num} -> D105 trigger cycle
-# (see Startle/trial_epochs.py) -- there is no TMIN/TMAX offset to tune. This
+# (see trial_epochs.py) -- there is no TMIN/TMAX offset to tune. This
 # pipeline's own DIN-trigger handling (STI 014 / find_events) is retired;
 # trial_epochs.build_trial_epochs() is now the sole source of trial boundaries
 # for every pipeline, EMG included.
-#
-# ── Signal notes ───────────────────────────────────────────────────────────────
-#
-# Bandpass: single Butterworth 0.01-70 Hz, 2nd order (AIRFLOW_HIGHPASS/
-# AIRFLOW_LOWPASS in config), applied once in process_session() on the
-# native-rate raw signal, before resampling to CACHE_SFREQ. This is a WIDE
-# anti-alias / DC-removal pass, NOT respiration isolation -- NK2's own
-# khodadad2018 cleaning (RSP_PEAK_METHOD_CLEANING) does the ~0.05-3 Hz
-# respiration-band isolation the peak detector needs. Do NOT set cleaning to
-# "none": the detector then runs on the wideband trace and finds ~1 breath/min.
-# Respiratory content: 0.1-0.5 Hz at rest (12-30 bpm).
 
-import os
-import pickle
 import numpy as np
 import pandas as pd
 import neurokit2 as nk
-from scipy.signal import butter, filtfilt
-
-import trial_epochs
-
-def _butter_bandpass(lowcut, highcut, fs, order=2):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    b, a = butter(order, [low, high], btype='band')
-    return b, a
-
-def _butter_bandpass_filter(data, lowcut, highcut, fs, order=2):
-    b, a = _butter_bandpass(lowcut, highcut, fs, order=order)
-    y = filtfilt(b, a, data)
-    return y
-
-def process_session(mff_path, ratings_df, config):
-    """Layer 1: ground-truth trial epochs (trial_epochs.build_trial_epochs) +
-    raw signal extraction, downsampled for caching.
-
-    ratings_df must be the FULL, unfiltered CSV (trial_epochs.load_all_trials_ratings)
-    -- every row becomes a trial here, sound and no-sound alike.
-
-    Event/epoch extraction always runs on the original full-rate, full-channel
-    raw (read_raw_egi) -- DIN triggers must not be resampled or have other
-    channels dropped before detection. Only after build_trial_epochs() succeeds
-    do we pick the analysis channel and downsample for the cache.
-
-    Raises trial_epochs.TriggerAlignmentError if this session's D105/D{code}
-    triggers don't match its CSV -- callers must let this propagate (or
-    explicitly catch and skip the session) rather than silently continuing
-    with an untrustworthy trial/CSV alignment.
-    """
-    import mne
-    if config.VERBOSE:
-        print(f"  Layer 1: Processing raw MFF ({os.path.basename(mff_path)}) ...")
-
-    try:
-        raw = mne.io.read_raw_egi(mff_path, preload=True, verbose=False)
-    except Exception as e:
-        print(f"  Error reading {mff_path}: {e}")
-        return None
-
-    native_sfreq = raw.info["sfreq"]
-    trials = trial_epochs.build_trial_epochs(raw, ratings_df)  # raises on mismatch
-
-    ch_names = raw.info["ch_names"]
-    target_ch = next((c for c in ch_names if config.AIRFLOW_CHANNEL.lower() in c.lower()), None)
-    if target_ch is None:
-        if config.VERBOSE:
-            print(f"  Channel '{config.AIRFLOW_CHANNEL}' not found in {ch_names}")
-        return None
-
-    raw.pick([target_ch])
-
-    # ── Bandpass filter (native rate, before downsampling) ─────────────────────
-    # Must run here: CACHE_SFREQ's Nyquist (12.5 Hz at 25 Hz) is below
-    # AIRFLOW_LOWPASS (70 Hz), so this cutoff can't be realized after resample.
-    raw.apply_function(
-        lambda x: _butter_bandpass_filter(
-            x.astype(np.float64), config.AIRFLOW_HIGHPASS, config.AIRFLOW_LOWPASS,
-            native_sfreq, order=2),
-        picks=0, channel_wise=True, verbose=False)
-
-    raw.resample(sfreq=config.CACHE_SFREQ, npad="auto", verbose=False)
-
-    cache_sfreq = raw.info["sfreq"]
-    signal_raw  = raw.get_data(picks=0)[0]
-    times_raw   = raw.times
-
-    # Trigger sample indices are in native_sfreq space (from the un-resampled
-    # raw); convert to seconds here so they're valid regardless of CACHE_SFREQ.
-    trials_meta = []
-    for t in trials:
-        row = ratings_df.iloc[t["trial_index"]]
-        trials_meta.append({
-            "trial_index":        t["trial_index"],
-            "code_value":         t["code_value"],
-            "has_sound":          t["d110_sample"] is not None,
-            "d105_time":          t["d105_sample"] / native_sfreq,
-            "code_time":          t["code_sample"] / native_sfreq,
-            "d110_time":          (t["d110_sample"] / native_sfreq
-                                    if t["d110_sample"] is not None else None),
-            "baseline_range_sec": tuple(s / native_sfreq for s in t["baseline_range"]),
-            "response_range_sec": tuple(s / native_sfreq for s in t["response_range"]),
-            "subjective_label":   row.get("subjective_label", np.nan),
-            "image_type":         row.get("image_type", None),
-            "image_detail":       row.get("file_name", None),
-            "valence":            row.get("valenceRating", np.nan),
-            "arousal":            row.get("arousalRating", np.nan),
-        })
-
-    payload = {
-        "sfreq":       cache_sfreq,
-        "channel":     target_ch,
-        "signal_raw":  signal_raw,
-        "times_raw":   times_raw,
-        "trials_meta": trials_meta,
-    }
-    return payload
-
 
 def apply_analysis_params(sessions_cache, config):
     """Layer 2: Run filters, extract respiratory features, score and clean trials.
@@ -179,7 +59,7 @@ def apply_analysis_params(sessions_cache, config):
 
             # ── NK2 on full session signal ────────────────────────────────────
             # raw_sig is the WIDE Layer-1 bandpass (0.01-70 Hz, native rate --
-            # see process_session). NK2's khodadad2018 cleaning
+            # see airflow_glm.process_session). NK2's khodadad2018 cleaning
             # (RSP_PEAK_METHOD_CLEANING) then isolates the respiration band so
             # the peak detector works -- it must NOT be "none" or detection
             # collapses to ~1 breath/min and every trial fails the BxB cycle test.

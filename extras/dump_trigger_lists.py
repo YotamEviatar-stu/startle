@@ -10,19 +10,19 @@ Output layout:
     OUTPUT_DIR/<SubjectID>/eve.txt
     OUTPUT_DIR/<SubjectID>/mor.txt
 
-Usage: python -m Startle.dump_trigger_lists
+Usage: python dump_trigger_lists.py
 """
 
 import os
 
 import mne
 
-import Startle.extras.emg_raw_potentiation as emg
-from Startle.trial_epochs import _classify_channel, _merge_contiguous
+import extras.emg_raw_potentiation as emg
+from extras.trial_epochs import _classify_channel, _merge_contiguous
 
 RAW_DATA_DIR = "/Volumes/My Passport/startle_raw"
 SESSION_MAP = emg.SESSION_MAP
-OUTPUT_DIR = "/Users/yotameviatar/vs_code/trigger_lists"
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "trigger_lists")
 
 _ANNOTATIONS = {105: "<- fixation onset", 110: "<- SOUND"}
 

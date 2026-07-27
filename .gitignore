@@ -1,1 +1,39 @@
-ml/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE/editor
+.vscode/
+!.vscode/tasks.json
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Output directories
+ecg_output/
+
+# MNE/EEG raw intermediate cache
+*.pkl
+
+# others
+*.tmp
+
+# PsPM vendored MATLAB toolbox (extras/PsPM_v7.0.0)
+*.mat
+*.asv
+*.MATLABDriveTag

@@ -2,7 +2,7 @@
 """
 Smoke test + cache inspector for the HR pipeline.
 
-Usage (run from /Users/yotameviatar/vs_code):
+Usage (run from /Users/yotameviatar/startle-1):
   .venv/bin/python HR/.claude/skills/run-hr/smoke.py [--full]
 
 Without --full: verifies cache health + analysis params (~300 ms, no disk writes).
@@ -11,7 +11,7 @@ With    --full: also runs the complete pipeline and saves all plots (~2 min).
 
 import os, sys, time, pickle
 
-REPO  = os.path.expanduser("~/vs_code")
+REPO  = os.path.expanduser("~/startle-1")
 CACHE = os.path.expanduser("~/Desktop/spo2_output/_cache/spo2_cache.pkl")
 
 sys.path.insert(0, REPO)

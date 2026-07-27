@@ -31,7 +31,7 @@ trial/CSV alignment for this session cannot be trusted.
 import re
 import pandas as pd
 
-import Startle.extras.emg_raw_potentiation as emg
+import extras.emg_raw_potentiation as emg
 
 TRIGGER_SESSION_START = emg.TRIGGER_SESSION_START   # 101
 TRIGGER_SESSION_END   = emg.TRIGGER_SESSION_END     # 124
@@ -110,6 +110,17 @@ def _merge_contiguous(events_df: pd.DataFrame):
         else:
             merged.append({"Channel": ch, "Sample": s, "LastSample": s})
     return merged
+
+
+def first_session_marker_sample(raw):
+    """The task block's D101 sample -- everything before this is pre-task
+    idle time (impedance check, setup), not part of the recorded protocol."""
+    events_df = emg.get_events_from_eeg(raw)
+    merged = _merge_contiguous(events_df)
+    channels = [m["Channel"] for m in merged]
+    if "D101" not in channels:
+        raise TriggerAlignmentError("D101 not found in this recording")
+    return merged[channels.index("D101")]["Sample"]
 
 
 def build_trial_epochs(raw, ratings_df: pd.DataFrame):

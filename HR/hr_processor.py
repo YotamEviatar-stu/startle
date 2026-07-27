@@ -18,7 +18,7 @@ Layer 2 (all free to tune): ANAL_TMIN/TMAX, SCORE_*, HR_MIN/MAX_BPM,
 
 Epoch/baseline/response window timing is NOT a free parameter -- it is ground
 truth from the D105 -> D{trigger_num} -> D105 trigger cycle (see
-Startle/trial_epochs.py). DIN-trigger handling here is retired in favor of
+trial_epochs.py). DIN-trigger handling here is retired in favor of
 trial_epochs.build_trial_epochs(), which is now the sole source of trial
 boundaries for every pipeline.
 """
@@ -31,7 +31,7 @@ import pandas as pd
 import mne
 from scipy.signal import resample_poly
 
-import trial_epochs
+import extras.trial_epochs as trial_epochs
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 

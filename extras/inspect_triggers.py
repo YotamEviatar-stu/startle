@@ -22,15 +22,15 @@ match would silently absorb it. That is the point -- it is meant to catch
 the raw mistake (e.g. AS09: DI73 then DI27, 7.2s apart, no D105 between
 them) directly in the trigger log, not rely on downstream tolerance.
 
-Usage: python -m Startle.inspect_triggers
+Usage: python inspect_triggers.py
 """
 
 import os
 
 import mne
 
-import Startle.extras.emg_raw_potentiation as emg
-from Startle.trial_epochs import _classify_channel, _merge_contiguous
+import extras.emg_raw_potentiation as emg
+from extras.trial_epochs import _classify_channel, _merge_contiguous
 
 RAW_DATA_DIR = "/Volumes/My Passport/startle_raw"
 SESSION_MAP = emg.SESSION_MAP

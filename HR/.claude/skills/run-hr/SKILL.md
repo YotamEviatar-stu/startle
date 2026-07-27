@@ -10,7 +10,7 @@ applies moving-baseline correction, scores peak % change, rejects outliers, and
 produces group comparison plots. Driven via `smoke.py` (cache check + optional full run)
 or the Jupyter notebook for interactive config iteration.
 
-**All commands run from `/Users/yotameviatar/vs_code`.**
+**All commands run from `/Users/yotameviatar/startle-1`.**
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ After enabling `FORCE_RELOAD`, set it back to `False` immediately after the firs
 Verifies cache integrity and `apply_analysis_params` in ~150 ms. No files written.
 
 ```bash
-cd /Users/yotameviatar/vs_code
+cd /Users/yotameviatar/startle-1
 .venv/bin/python HR/.claude/skills/run-hr/smoke.py
 ```
 
@@ -62,7 +62,7 @@ Expected output:
 ## Run: full pipeline (all plots, ~2 min)
 
 ```bash
-cd /Users/yotameviatar/vs_code
+cd /Users/yotameviatar/startle-1
 .venv/bin/python -m HR.hr_main
 ```
 
@@ -73,7 +73,7 @@ subjects load from drive (slow, one-time). ES29 eve, MG14 mor, ML28 eve are corr
 ## Interactive config iteration (no files written)
 
 ```bash
-cd /Users/yotameviatar/vs_code
+cd /Users/yotameviatar/startle-1
 .venv/bin/jupyter notebook HR/hr_explore.ipynb
 # or in VS Code: open HR/hr_explore.ipynb, select ".venv" kernel
 ```

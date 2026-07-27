@@ -8,7 +8,7 @@ TriggerAlignmentError / mne read-failure handling) — a diagnostic tool, not
 part of the analysis pipeline.
 
 Run with:
-    .venv/bin/python Startle/Airflow/airflow_mff_show.py
+    .venv/bin/python Airflow/airflow_mff_show.py
 """
 
 import os
@@ -19,9 +19,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import mne
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # vs_code root
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))        # Startle/
-sys.path.insert(0, os.path.dirname(__file__))                            # Startle/Airflow/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))        # repo root
+sys.path.insert(0, os.path.dirname(__file__))                            # Airflow/
 
 import airflow_config as cfg
 
@@ -35,7 +34,7 @@ import airflow_config as cfg
 # nowhere -- no error, just no figure. Save/restore around the import so this
 # module never has that side effect on whoever imports it.
 _backend_before_emg_import = matplotlib.get_backend()
-from Startle.extras.emg_raw_potentiation import find_startle_output_folder, find_mff_file, get_events_from_eeg
+from extras.emg_raw_potentiation import find_startle_output_folder, find_mff_file, get_events_from_eeg
 matplotlib.use(_backend_before_emg_import)
 
 # ── What to show ───────────────────────────────────────────────────────────────

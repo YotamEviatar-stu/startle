@@ -4,9 +4,9 @@ HR Pipeline Main
 Orchestration: cache management, plotting, CSV export.
 
 Run with:
-  .venv/bin/python Startle/HR/hr_main.py
+  .venv/bin/python HR/hr_main.py
 
-Epoch/baseline/response window timing is ground truth (see Startle/trial_epochs.py),
+Epoch/baseline/response window timing is ground truth (see trial_epochs.py),
 not a config knob.
 """
 
@@ -22,12 +22,12 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from scipy.ndimage import gaussian_filter1d
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))       # Startle/
-sys.path.insert(0, os.path.dirname(__file__))                           # Startle/HR/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))       # repo root
+sys.path.insert(0, os.path.dirname(__file__))                           # HR/
 
 import hr_config as config
 import hr_processor as processor
-import trial_epochs
+import extras.trial_epochs as trial_epochs
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
