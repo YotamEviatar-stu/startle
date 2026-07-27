@@ -260,12 +260,12 @@ computed independently of, the specific values being normalized.
 
 ---
 
-## 4. Does this change `extras/emg_raw_potentiation.py` or `trial_epochs.py`?
+## 4. Does this change `extras/emg_raw_potentiation.py` or `extras/trial_epochs.py`?
 
 **No.** This is a scoring/normalization-layer question (how β₁ or a peak
 amplitude gets rescaled after extraction), not an epoch-extraction or
-trial-structure question. `trial_epochs.py`'s job (ground-truth trial windows
-from DIN triggers) and `emg_raw_potentiation.py`'s canonical event/baseline logic
+trial-structure question. `extras/trial_epochs.py`'s job (ground-truth trial windows
+from DIN triggers) and `extras/emg_raw_potentiation.py`'s canonical event/baseline logic
 are upstream of and unaffected by whatever normalization convention the Airflow
 GLM scorer eventually adopts. No change to either file is implied by anything
 found here.
