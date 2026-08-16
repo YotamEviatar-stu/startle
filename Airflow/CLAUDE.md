@@ -41,8 +41,8 @@ Loaded only for sessions working under `Airflow/`. See the project root `.claude
 > recording is ~3x inflated and answers a different question.
 >
 > **Authoritative instead of this file:** `airflow_glm.py`, `airflow_qc.py`,
-> `airflow_config.py` for what runs; `Airflow/_scratch/STATUS.md` for status, open decisions
-> and traps; `Airflow/_scratch/cycle_rejection_spec.md` for the design and its invariants.
+> `airflow_config.py` for what runs; `Airflow/_scratch/METHOD.md` for the complete method
+> description, its parameter provenance (§6), known divergences (§9) and claims (§10).
 > Verify with `.venv/bin/python Airflow/_scratch/verify_spec_numbers.py` (ALL CHECKS PASSED)
 > and `.venv/bin/python Airflow/_scratch/debug_pipeline.py` (full-cohort invariant check).
 >
@@ -92,8 +92,8 @@ detection puts one onset on one real breath; per-breath `RP`/`RA`/`RFR` are meas
 untouched `signal_raw` (never on `raw_z`, which is filtered and exists only to time onsets —
 `pspm_resp_pp.m`'s `resp`/`newresp` split); rejection is one verdict per breath with a named
 reason; the continuous series is blanked, not trimmed, with NaN written after `lfilter`; and
-the GLM solves on finite rows only. `Airflow/_scratch/cycle_rejection_spec.md` §4 lists these
-as checkable invariants — including **condition-blindness**: no function in this path may read
+the GLM solves on finite rows only. `Airflow/_scratch/METHOD.md` §10 lists these
+as checkable claims — including **condition-blindness**: no function in this path may read
 the session key, `label`, or `has_sound`.
 
 ## Communication
@@ -110,168 +110,12 @@ how long a reply should be. Long-form output goes to a `.md` file under
 | file | status |
 |---|---|
 | `airflow_glm.py`, `airflow_qc.py`, `airflow_config.py` | **authoritative** — this is what runs |
-| `Airflow/_scratch/cycle_rejection_spec.md` | the cycle-based design being proposed (signatures, call chain, invariants, what gets deleted); nothing in it is implemented |
-| `Airflow/_scratch/STATUS.md` | the checklist — what is true now, the open decisions, what is unstarted |
-| `Airflow/_scratch/verify_spec_numbers.py` | regenerates every number in the spec from the cache (`.venv/bin/python Airflow/_scratch/verify_spec_numbers.py`) |
-| `Airflow/README.md`, `GLM_METHOD_FOUNDATIONS.md`, `GLM_SIGNAL_REVIEW.md`, `DISCUSSION.md` | **stale** on rejection — their Stage 1b/4b/6 sections and the Array A/B language describe superseded schemes |
-| `Airflow/airflow_glm_input_show.ipynb` | cannot run — imports `airflow_qc.classify_cycles`, which does not exist |
+| `Airflow/_scratch/METHOD.md` | **the method** — every stage, every parameter with its provenance, known divergences, claims |
+| `Airflow/_scratch/verify_spec_numbers.py`, `debug_pipeline.py` | the two verifiers; both currently green |
+| `Airflow/GLM_METHOD_FOUNDATIONS.md` | PsPM cascade/GLM background; **stale** on rejection |
+| `Airflow/airflow_glm_input_show.ipynb` | marked BROKEN — do not run |
 
 ---
 
-# Historical record — superseded design and framing
-
-Everything below is kept for provenance only. It describes (a) code that is not on disk and
-(b) the earlier framing in which an Evening-vs-Morning p-value was the endpoint and condition
-balance was a pass/fail gate. Neither is current. Do not read any of it as policy, and do not
-quote its numbers.
-
----
-
-## Rejection — the BREATH CYCLE is the single unit (rewritten 2026-08-05) — ⚠ DESCRIBES CODE THAT IS NOT ON DISK
-
-One decision, made once, in `airflow_qc.classify_cycles`. The five overlapping layers that
-preceded it (QC excursion interpolation, deep-breath ratio, Array A, `GLM_MAX_ABS_Z`
-ceiling, Array B valid-fraction) are **gone**, along with ~20 config constants.
-
-Per-cycle features (`RP`, `RA`, `RFR`, `std`, `kurt`) are all measured on the **untouched
-`signal_raw`** — never on `raw_z`, which is filtered and exists only to time the onsets.
-This is `pspm_resp_pp.m`'s `resp`/`newresp` split, and it was previously broken (RA read a
-QC-interpolated copy). Five gates, in attribution order:
-
-| gate | catches | rule | kind |
-|---|---|---|---|
-| `unmeasurable` | unusable breath | `RA` non-finite or ≤ 0 | absolute |
-| `lost_lock` | span covering several breaths | ≥ `CYCLE_LOSTLOCK_MIN_PEAKS` (3) prominent inspiratory peaks inside one cycle | absolute |
-| `rate_implausible` | not a breath | `RP` outside `CYCLE_RP_RANGE` = (2.0, **None**) | absolute |
-| `shape` | cough / movement at normal amplitude | excess kurtosis over a **fixed** `CYCLE_KURT_WIN_SEC` (3.0 s) window > `CYCLE_KURT_MAX` = 5.55 | absolute |
-| `flat` | dead signal / sensor off | `std` < `CYCLE_FLAT_RATIO` (0.10) × session median std — AASM apnea criterion | session-centred |
-| `extreme` | cough / movement by amplitude | two-sided robust z on `log(RA)`, `|z|` > `CYCLE_LOGRA_Z` = 7.0 | session-centred |
-
-`unmeasurable` has never fired (0/17457) and is unreachable: `RA = max−min` over a
-non-empty finite segment cannot be non-finite or ≤ 0. It is kept as a guard, not a
-working gate.
-
-**`shape` is measured on a fixed 3.0 s window, not on the cycle's own span.** The
-variable-length version tracked cycle duration at ρ=0.410 and fired on 0.37% of <3 s
-cycles vs 48.5% of 10–20 s ones — it was largely a duration gate wearing a shape gate's
-label (OM16/mor: a 94.5 s dead-flat span containing *zero* breaths scored kurtosis 53.05
-and was attributed to `shape`). Fixed window: ρ=0.173, 0.71% vs 10.9%. `CYCLE_KURT_MAX`
-= 5.55 is the cohort percentile (p97.39) the old 5.0 sat at, so the gate removes the same
-*fraction* of cycles and only *which* cycles changed. Matched on the cohort before any
-Eve-vs-Mor comparison.
-
-**`lost_lock` is not an upper RP bound.** A genuine sigh-with-pause has RP ≫ median but
-still one inspiratory excursion — 71% of cycles even at 15–25 s are single breaths, which
-is why the 8.0 s bound was correctly removed. What `lost_lock` catches is the detector
-failing to cross zero under baseline drift and emitting one span over several real
-breaths (MG14/eve: 41.9 s holding 6; AK12/eve: 31.9 s holding 9). 26 cycles / 498 s
-cohort-wide, 20 of which were previously admitted as valid breaths.
-
-**`CYCLE_LOGRA_SCALE` = 0.300 is a frozen COHORT constant, not the session's own MAD.** With
-a per-session MAD the same k is a different gate in every recording — measured on this
-cohort it ranged from "reject >1.9× the median breath" (RP06/mor) to ">27.8×" (EV15/eve), a
-15× spread. The frozen scale puts the cut at 8.2× the session median everywhere = cohort
-p99.5, above the sigh band (p99 = 5.3×) and far below artifacts (p99.9 = 41.8×). Calibrated
-over 39 sessions / 17828 cycles with leave-one-session-out deviation 2.0%, **before** any
-Eve-vs-Mor comparison. Do not retune.
-
-**There is no upper RP bound.** `pspm_resp_pp.m` enforces only `ibi >= 1 s` (the refractory
-in `detect_cycles`); its 10 s marker is a plotting flag, not an exclusion. An 8.0 s bound
-was tried and removed: cycles above 2× the session median RP carry RA 1.38× normal and RFR
-0.49× — one deep breath followed by a hold, i.e. sigh-with-pause physiology, plausibly the
-respiratory startle response itself. That bound failed condition balance at p<0.0001.
-
-Session-relative gates are structurally blind to a uniformly corrupted session. The
-`degenerate` flag reports that class from absolute-gate evidence only
-(`SESSION_MAX_ABSOLUTE_FAIL` = 0.30, or a dead reference statistic). A gate whose session
-reference is untrustworthy (< `CYCLE_MIN_REF_CYCLES` = 30 breaths, or zero MAD) **abstains
-and reports doing so** — never silently.
-
-Trial admission (`glm.admit_trials`) requires a **fraction** of the window's breaths to be
-valid — `TRIAL_MIN_VALID_FRAC` (0.60) of the cycles overlapping `TRIAL_WINDOW_SEC` (12.0 s,
-inside the true 12.49 s minimum trial gap). `TRIAL_MIN_VALID_CYCLES` is `None`; an absolute
-count is **not** condition-neutral, because breathing rate differs between sessions (median
-RP 3.30 s Eve vs 3.60 s Mor, Mann-Whitney p=2.4e-110) so a fixed "2 valid" demanded 55% of
-Evening's breaths and 60% of Morning's. See the `airflow_config.py` block for the balance
-table; do not add a count floor back on top of the fraction.
-
-A rejected trial is dropped from the event train, scored NaN, **and its
-`[onset, onset+TRIAL_WINDOW_SEC)` span is blanked to NaN in `series`** — under
-`pooled_session` only (`rejected_trial_spans`, applied in Pass A before
-`build_continuous_series`). Design and data must agree: leaving those samples in `y` with no
-regressor puts them in the residual, which is the bias `fit_pooled_session_glm`'s own
-docstring warns about. The blanking is gated on `GLM_ESTIMATION` because under `per_trial`
-a 12 s blank overlaps the *next* trial's baseline window (6.74 s median lead, 85.5% of
-pairs) — harmless for a pooled fit, which has no per-trial baseline, but not for per-trial.
-Do not ungate it.
-
-`TRIAL_REQUIRE_PEAK_CYCLE` has never fired: the RA `[τ−σ, τ+σ]` = [4.33, 11.81] covers 62%
-of the 12 s window, so it cannot bind. It is inert, not a safeguard.
-
-### Condition balance — recorded here as a hard gate; it is now a REPORT, not a gate
-
-*Superseded framing.* Balance is measured and reported, never used to pass or fail a gate and
-never used to pick a threshold. What survives from this section is the measurement rule below:
-**weight by SECONDS, not by breaths.** Counting cycles books
-a 332.9 s dead span (SH25/eve) and a 3 s breath as 2 equal units; the quantity that
-matters is how much signal each condition loses. `classify_cycles`' report carries both
-(`gate_counts`/`kept_frac` and `gate_seconds`/`kept_seconds_frac`), and F2 prints both.
-
-Time-weighted (binding), Eve/Mor % of recorded time removed:
-`lost_lock` 1.74/0.85 (p<1e-6, **FAIL**), `rate_implausible` 0.17/0.12 (p=0.14),
-`shape` 3.29/4.66 (p<1e-6, **FAIL**), `flat` 2.03/0.12 (p<1e-6, **FAIL**),
-`extreme` 2.23/0.44 (p<1e-6, **FAIL**), **overall 7.13/5.90 (p<1e-6, FAIL)**.
-
-Cycle-weighted also fails now that `shape` is duration-corrected: overall 3.08/3.94
-(p=0.0020). It passed at 3.13/3.19 (p=0.84) only because the duration confound was
-mixing two populations — the old `shape` flagged Evening's long cycles, masking that the
-underlying shape statistic fires more in Morning.
-
-**Do not retune the gates to make this pass.** The failure is the instrument working. It
-means either the gates need redesign or the imbalance is real physiology (Morning
-breathing genuinely more peaked); which one is an open question, not a tuning target. The
-cohort-sweep and F2 cells at the end of `airflow_qc_show.ipynb` re-run all of this; read
-that table before any single-session figure.
-
-Known accepted limitation: the MS18/eve cough at 633.1–638.4 s is **not** caught (kurtosis
-3.15 vs threshold 5.0; amplitude 4.7× vs threshold 8.2×). Every kurtosis threshold low
-enough to catch it fails condition balance (at 3.0: 4.29% Eve vs 5.20% Mor, p=0.0042), so
-it stays uncaught deliberately.
-
-`SUBJECTS_EXCLUDE` remains a hand-maintained list (`LG07/mor` added 2026-08-05 after it came
-last in the cohort sweep at 71.7% breaths kept, next-worst 84.4%). It is **not** derived
-from the gates and is out of scope of the cycle-level scheme.
-
-## Current confirmatory result (2026-08-05, after the reset) — ⚠ NOT REPRODUCIBLE FROM THIS TREE
-
-Pre-registered: per-subject mean `score_RA` over admitted trials, Evening vs Morning, paired
-Wilcoxon, `pooled_session`. N=17 with both sessions, 1405/1463 trials admitted (96.0%).
-
-**RA is null, and trends OPPOSITE to the hypothesis**: 7/17 subjects Eve>Mor, Eve mean
-−0.3375 vs Mor −0.1457, two-sided **W=36.0 p=0.0569**, one-sided (H1 Eve>Mor) **p=0.9747**.
-Exploratory: RP 11/17, two-sided p=0.109 / one-sided p=0.054; RFR 6/17, two-sided p=0.306.
-
-## Current confirmatory result (2026-08-06, after the audit fixes) — ⚠ NOT REPRODUCIBLE FROM THIS TREE
-
-Both blockers from the 08-06 audit are now fixed: rejected trials are blanked from `y`
-(design/data coherence) and admission is a scale-free fraction. Gates: `lost_lock` added,
-`shape` measured on a fixed window. Admitted 1424/1463 (97.3%) — `low_valid_fraction` 33,
-`no_valid_cycles` 6.
-
-**RA: 6/17 Eve>Mor, Eve −0.2579 vs Mor −0.0303, two-sided W=28.0 p=0.0202**, one-sided
-(H1 Eve>Mor) p=0.9913. The effect is now *significant in the direction OPPOSITE the
-hypothesis*. Exploratory: RP 9/17 p=0.927; RFR 6/17 p=0.244.
-
-The p≈0.057 reported on 08-05 was an artifact of the incoherent design/data handling — both
-coherent repairs converge on the same place (re-admitting the dropped trials gave p=0.0150,
-blanking them gives p=0.0202), which is why 0.057 should not be quoted.
-
-**RP's earlier one-sided p=0.054 is gone (now p=0.93) — do not cite it.** It was resting on
-the same defect.
-
-Report these numbers as they stand. The gates and the admission fraction are frozen and must
-not be retuned against these p-values. `extreme` still fires low-side on 33 of 59 cycles,
-i.e. mostly on shallow breaths rather than the "cough / movement" it is documented as
-catching — open, and cosmetic relative to the above.
-
-*(end of historical record)*
+*(The historical record of the superseded per-trial design was removed 2026-08-16;
+it is preserved in git history at commit 66dccb9.)*

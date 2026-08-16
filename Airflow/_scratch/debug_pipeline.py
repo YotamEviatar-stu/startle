@@ -3,7 +3,7 @@
     /Users/yotameviatar/startle-1/.venv/bin/python Airflow/_scratch/debug_pipeline.py
 
 Runs run_glm_scoring over the whole cache and asserts the invariants of
-cycle_rejection_spec.md §4. Read-only. Prints PASS/FAIL per invariant.
+METHOD.md §10. Read-only. Prints PASS/FAIL per invariant.
 """
 
 import os
@@ -87,11 +87,11 @@ def main():
           f"{n_rej} rejected ({100*n_rej/n_trials:.1f}%)")
     print(f"  rejection reasons: {reasons}")
 
-    print("\n── spec §4 invariants ──")
-    check("2 · one decision point — no legacy gate name survives",
+    print("\n── METHOD.md §10 claims ──")
+    check("4 · one decision point — no legacy gate name survives",
           not (set(reasons) & LEGACY_REASONS),
           f"unexpected: {set(reasons) - VALID_REASONS}" if set(reasons) - VALID_REASONS else "")
-    check("4 · condition-blind — design carries no condition split",
+    check("9 · condition-blind — design carries no condition split",
           conds == {1}, f"conditions seen: {sorted(conds)}")
     bad = [s for s, n in betas_per_sess if n > 1]
     check("8 · exactly one beta per session", not bad, f"multi-beta: {bad[:5]}")
@@ -120,7 +120,7 @@ def main():
     s_rej, _ = glm.build_continuous_series(cycles, n, sfreq,
                                            hp=config.GLM_FINAL_HP, lp=config.GLM_FINAL_LP,
                                            rejected=rej)
-    check("1 · nothing trimmed — len(series) unchanged by rejection",
+    check("6 · nothing trimmed — len(series) unchanged by rejection",
           len(s_none["RA"]) == len(s_rej["RA"]) == n,
           f"{len(s_none['RA'])} / {len(s_rej['RA'])} / {n}")
     check("   rejection never un-NaNs a sample that was already NaN",
@@ -148,7 +148,7 @@ def main():
             i = j
         else:
             i += 1
-    check("5 · NaN written after lfilter — finite resumes after every hole",
+    check("7 · NaN written after lfilter — finite resumes after every hole",
           all(j >= len(y) or np.isfinite(y[j]) for i, j in runs),
           f"{len(runs)} holes, longest {max((j-i) for i, j in runs)/sfreq:.1f}s" if runs else "")
 

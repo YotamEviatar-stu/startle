@@ -1,8 +1,6 @@
-Read these three files in order before doing anything, and no other Airflow doc until you have:
-
-  1. Airflow/_scratch/IMPLEMENTATION_BRIEF.md   (rules, settled decisions, open ones, what to build)
-  2. Airflow/_scratch/STATUS.md                 (status, statistics inventory, traps)
-  3. Airflow/_scratch/cycle_rejection_spec.md   (design; §4 invariants, §6 scope warning, §8-10)
+Read Airflow/_scratch/METHOD.md first — it is the complete, objective description of the
+method: every stage, every parameter, where each value came from, the known divergences (§9)
+and the claims the method makes (§10). Read no other Airflow doc until you have.
 
 Then run both verifiers and confirm they are green before touching a line:
 

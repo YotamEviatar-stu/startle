@@ -97,17 +97,20 @@ trial.
   trial. This is the faithful `pspm_glm.m` estimator.
 
 **This is a real, deliberate architectural choice, not a bug** — state
-which path produced a reported number in any write-up:
+which path produced any number you report:
 - Per-trial scoring is what lets this project run per-trial diagnostics and
-  the trial-level scatter/timecourse plots; both paths still feed the same
-  paired, within-subject Wilcoxon (the confirmatory cell averages
-  `score_<metric>` over a session's accepted trials, which for the pooled
-  path collapses to a trial-count-weighted mean of the Neg/Neu betas).
+  the trial-level scatter/timecourse plots. It produces one value per trial;
+  the pooled path produces one β per condition, written back onto each
+  admitted trial, so a per-trial mean over a pooled session collapses to a
+  trial-count-weighted mean of the Neg/Neu betas. The two are not
+  interchangeable and must never be mixed in one summary.
 - Per-trial is **not** what Bach et al. 2016 describes; a reader familiar
   with that paper would expect the pooled, per-condition estimates. Under
   both paths the response-function shapes, orthogonalized derivative and
   per-modality filters are faithfully reproduced; only `"pooled_session"`
   also reproduces the estimation architecture.
+- The choice is fixed a priori from the method, never selected by comparing
+  what each path does to a downstream contrast.
 
 ## 6. What this method deliberately does NOT do
 
@@ -119,59 +122,47 @@ which path produced a reported number in any write-up:
 - It does not distinguish "no response" from "a response, but not matching
   the fixed template's shape" — both produce a low score.
 
-## 7. The confirmatory result — pre-registered, and currently null on this path
+## 7. What has to be true before a `score_ra` is worth anything
 
-The single pre-specified test (`GLM_PRIMARY_METRIC` in `airflow_config.py`, run
-by the confirmatory cell in `airflow_glm_show.ipynb`): per-subject mean
-`score_<metric>` over accepted trials, **Evening vs Morning**, paired Wilcoxon,
-one-sided H1 Eve>Mor (direction fixed a priori in `CLAUDE.md`).
+`GLM_PRIMARY_METRIC` ("RA") names the metric this pipeline is **validated
+against** — the one whose whole chain has to hold up, not a statistical
+endpoint. Before any β is worth reading, each link below must be
+demonstrable on the real recordings:
 
-As of this analysis (24 subjects cached, N=17 with both sessions,
-`SUBJECTS_EXCLUDE` always parking DA01/ER23/YL26 plus default
-`GLM_ARTIFACT_METHOD="hampel_reject_trials"` layered on top for the rest),
-the pre-registered test on the
-**primary metric (RA)** is **null under both estimation paths** (§5):
+1. **The filter passes respiration and nothing else.** Check the PSD of the
+   filtered trace against the raw one, per subject — not the group mean.
+2. **One onset marks one real breath.** `detect_cycles` runs on `raw_z`;
+   an onset that spans several breaths (baseline drift stopping the trace
+   from crossing zero) or splits one is a detection failure, and it shows up
+   as an implausible period, not as an error.
+3. **`RP`/`RA`/`RFR` are measured on `signal_raw`, never on `raw_z`.** This
+   is `pspm_resp_pp.m`'s `resp`/`newresp` split. `raw_z` is bandpassed and
+   z-scored and exists only to *time* the onsets; measuring amplitude on it
+   measures the filter's output. This has been wrong in this repo before.
+4. **Rejection is one verdict per breath, with a named reason**, consumed by
+   later stages rather than re-derived from window statistics — and blind to
+   the session key, `label`, and `has_sound`.
+5. **The series is blanked, not trimmed**, with NaN written *after* `lfilter`
+   so the causal recursion does not propagate the hole, and
+   `fit_pooled_session_glm` solving on finite rows only (it already does —
+   `np.linalg.pinv(X[valid]) @ y[valid]`).
+6. **The CRF actually resembles this cohort's response** — see §2. Fixed
+   τ/σ imported from the literature means a systematic scaling bias if this
+   population's timing differs, and no amount of statistics downstream will
+   surface it.
 
-| primary | path | Eve>Mor subjects | two-sided p | one-sided p |
-|---|---|---|---|---|
-| **RA** (primary) | per_trial       | 9/17  | 0.89 | 0.57 |
-| **RA** (primary) | pooled_session  | 8/17  | 0.78 | **0.39** |
-| RFR | per_trial       | 6/17  | 0.43 | 0.80 |
-| RFR | pooled_session  | 7/17  | 0.82 | 0.61 |
-| RP  | per_trial       | 10/17 | 0.35 | 0.18 |
-| RP  | pooled_session  | 11/17 | 0.10 | 0.049 |
-| composite | per_trial | 9/17  | 0.43 | 0.22 |
+`Airflow/_scratch/METHOD.md` §10 turns 3–5 into checkable
+invariants; `Airflow/_scratch/verify_spec_numbers.py` regenerates the
+supporting numbers straight from the cache.
 
-Reading this honestly:
-- **The primary endpoint (RA) is still null.** The pooled session-wide GLM moves
-  RA in the hypothesised direction and roughly halves the one-sided p (0.57 →
-  0.39), consistent with it being the more powerful estimator §5 predicts — but
-  it does not reach significance. That is the number to report for the Airflow
-  GLM channel: **no significant Eve>Mor effect.**
-- **RP under `pooled_session` crosses 0.05 one-sided (p=0.049, 11/17), but RP is
-  a SECONDARY/exploratory metric, not the pre-specified primary**, and it does
-  not survive two-sided (p=0.10). Quoting it as "the result" would be exactly the
-  multiplicity tailoring the `GLM_PRIMARY_METRIC` discipline exists to prevent.
-  Record it as an exploratory observation worth a pre-registered follow-up (RP =
-  breath-period/deceleration), not a confirmatory finding.
-- Per-trial RA β-weights sit essentially at zero (medians ~1e-4); the pooled
-  betas are larger and better-conditioned (one solve over a condition's trials
-  instead of averaging ~17 near-zero single-trial betas), which is why the pooled
-  path shifts the p-values without changing which trials are accepted.
-
-Recorded, not hidden. The methodology is PsPM-faithful and the pooled
-session-wide GLM (§5) is now **implemented** (`GLM_ESTIMATION="pooled_session"`),
-not just noted. Remaining legitimate, NON-p-hacking levers — pre-register before
-running, never pick by watching the p:
-
-- **The peak-excursion (BxB) scorer** (`airflow_amp_processor.py`) — a different,
-  legitimate design PsPM does not cover; source of the earlier non-null numbers.
-- **A pre-registered RP follow-up** — if the RP deceleration signal above is
-  judged physiologically motivated a priori, promote it to primary in a fresh
-  pre-registration; it cannot be claimed from this exploratory pass.
-
-Tuning gates/thresholds — or picking the estimation path or metric by watching
-the Eve-vs-Mor p — is NOT on that list.
+**On earlier numbers in this file.** Previous versions of §7 reported a
+pre-registered Evening-vs-Morning Wilcoxon on `score_ra` as the section's
+subject. That framing is retired: the pipeline is evaluated on whether it
+processes the signal correctly, not on what it does to a group contrast, and
+every p-value once quoted here came from rejection code that is no longer on
+disk (see `Airflow/CLAUDE.md` → *Historical record*). Do not reinstate a
+result section here, and do not choose the estimation path, the metric, or a
+threshold by watching a contrast.
 
 ## Related, ongoing tracking
 

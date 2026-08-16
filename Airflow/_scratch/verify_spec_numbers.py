@@ -1,4 +1,5 @@
-"""Regenerate every number quoted in cycle_rejection_spec.md §6, from the Layer-1 cache.
+"""Regression test: fixed reference numbers for MS18/eve, MS18/mor and RP06/mor,
+regenerated from the Layer-1 cache. A FAIL means the pipeline's behaviour moved.
 
     /Users/yotameviatar/startle-1/.venv/bin/python Airflow/_scratch/verify_spec_numbers.py
 
