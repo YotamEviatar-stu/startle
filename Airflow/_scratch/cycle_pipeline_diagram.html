@@ -1,0 +1,272 @@
+<title>Cycle-based rejection — Airflow pipeline</title>
+<style>
+:root {
+  --ground:#EFF3F3; --surface:#FFFFFF; --ink:#0F1A1B; --muted:#59696A;
+  --line:#D2DBDB; --rule:#E4EAEA; --accent:#0B7A85; --accent-soft:#0b7a851f;
+  --reject:#A93B2B; --reject-soft:#a93b2b1f; --warn:#8C6212; --warn-soft:#8c62121f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:#0C1213; --surface:#141E1F; --ink:#DEE9E8; --muted:#8DA0A0;
+    --line:#253233; --rule:#1D2829; --accent:#3FBAC5; --accent-soft:#3fbac526;
+    --reject:#E28068; --reject-soft:#e2806826; --warn:#D6A542; --warn-soft:#d6a54226;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:#0C1213; --surface:#141E1F; --ink:#DEE9E8; --muted:#8DA0A0;
+  --line:#253233; --rule:#1D2829; --accent:#3FBAC5; --accent-soft:#3fbac526;
+  --reject:#E28068; --reject-soft:#e2806826; --warn:#D6A542; --warn-soft:#d6a54226;
+}
+* { box-sizing:border-box; }
+body {
+  background:var(--ground); color:var(--ink); margin:0;
+  font:400 16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  padding:56px 24px 88px;
+}
+.wrap { max-width:1180px; margin:0 auto; display:flex; flex-direction:column; gap:52px; }
+header { display:flex; flex-direction:column; gap:10px; border-bottom:1px solid var(--line); padding-bottom:26px; }
+.eyebrow { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--accent); }
+h1 { margin:0; font-size:34px; line-height:1.15; font-weight:700; letter-spacing:-.022em; text-wrap:balance; }
+.sub { margin:0; color:var(--muted); max-width:66ch; }
+h2 { margin:0 0 4px; font-size:13px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.13em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+figure { margin:0; display:flex; flex-direction:column; gap:14px; }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:6px; padding:22px; overflow-x:auto; }
+figcaption { color:var(--muted); font-size:14.5px; max-width:80ch; }
+figcaption b { color:var(--ink); font-weight:600; }
+svg { display:block; max-width:100%; height:auto; }
+code, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.92em; }
+/* flow diagram */
+.f1-box { fill:var(--surface); stroke:var(--line); stroke-width:1.2; }
+.f1-key { fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.8; }
+.f1-title { fill:var(--ink); font:600 13px -apple-system,BlinkMacSystemFont,sans-serif; }
+.f1-sub { fill:var(--muted); font:400 11.5px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.f1-key-t { fill:var(--accent); font:700 13px -apple-system,BlinkMacSystemFont,sans-serif; }
+.f1-edge { stroke:currentColor; stroke-width:1.3; fill:none; opacity:.55; }
+.f1-edge-key { stroke:var(--accent); stroke-width:2; fill:none; }
+.f1-lab { fill:var(--muted); font:400 11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.f1-lab-key { fill:var(--accent); font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.f1-stage { fill:var(--muted); font:600 10.5px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.1em; }
+/* waveform */
+.wave { fill:var(--accent); stroke:none; opacity:.85; }
+.axis { stroke:currentColor; opacity:.22; stroke-width:1; }
+.tick { stroke:currentColor; opacity:.3; stroke-width:1; stroke-dasharray:2 3; }
+.g-shape { fill:var(--warn-soft); }
+.g-extreme { fill:var(--reject-soft); }
+.gate { fill:var(--reject); font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.note { fill:var(--muted); font:400 11.5px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.axlab { fill:var(--muted); font:400 11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.tr-admit { fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.4; }
+.tr-reject { fill:var(--reject-soft); stroke:var(--reject); stroke-width:1.4; stroke-dasharray:4 3; }
+.trlab { fill:var(--ink); font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.trfrac { fill:var(--muted); font:400 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+/* legend + table */
+.legend { display:flex; flex-wrap:wrap; gap:8px 22px; align-items:center;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--muted); }
+.legend span { display:inline-flex; align-items:center; gap:7px; }
+.sw { width:14px; height:12px; border-radius:2px; border:1px solid var(--line); }
+table { border-collapse:collapse; width:100%; font-size:14.5px; }
+th, td { text-align:left; padding:9px 14px 9px 0; border-bottom:1px solid var(--rule); }
+th { font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--muted); }
+td.num { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums; text-align:right; }
+.pass { color:var(--accent); font-weight:600; }
+.fail { color:var(--reject); font-weight:600; }
+footer { color:var(--muted); font-size:13.5px; border-top:1px solid var(--line); padding-top:20px; max-width:80ch; }
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Airflow · design proposal · 2026-08-10</div>
+  <h1>Rejection decided once, per breath cycle</h1>
+  <p class="sub">Two figures. The first shows where the validity decision is made and who reads it.
+  The second shows the same mechanism running on 50 seconds of real recorded airflow.
+  Nothing in <code>Airflow/</code> has been modified.</p>
+</header>
+
+<figure>
+  <h2>Figure 1 — the decision path</h2>
+  <div class="card">
+  <svg viewBox="0 0 1180 470" role="img" aria-label="Flow diagram: the detection copy supplies onset timing only, the cycle table measures features on the unfiltered signal, one validity decision per breath cycle is then read by three independent consumers: the series builder, trial admission, and the condition-balance test.">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" opacity=".55"/>
+      </marker>
+      <marker id="ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+      </marker>
+    </defs>
+
+    <text class="f1-stage" x="24" y="34">S0 · S1</text>
+    <rect class="f1-box" x="24" y="46" width="212" height="60" rx="4"/>
+    <text class="f1-title" x="40" y="70">signal_raw @ 25 Hz</text>
+    <text class="f1-sub" x="40" y="90">untouched · keeps DC</text>
+
+    <rect class="f1-box" x="24" y="146" width="212" height="66" rx="4"/>
+    <text class="f1-title" x="40" y="170">detection copy</text>
+    <text class="f1-sub" x="40" y="189">0.01-0.6 Hz, medfilt, z</text>
+    <text class="f1-sub" x="40" y="204">never measured on</text>
+
+    <path class="f1-edge" d="M 130 106 L 130 146" marker-end="url(#ah)"/>
+
+    <text class="f1-stage" x="316" y="34">S2</text>
+    <rect class="f1-box" x="316" y="46" width="212" height="166" rx="4"/>
+    <text class="f1-title" x="332" y="70">cycle table</text>
+    <text class="f1-sub" x="332" y="92">one row per breath</text>
+    <text class="f1-sub" x="332" y="112">RP   period</text>
+    <text class="f1-sub" x="332" y="129">RA   peak-to-trough</text>
+    <text class="f1-sub" x="332" y="146">RFR  RA / RP</text>
+    <text class="f1-sub" x="332" y="163">std</text>
+    <text class="f1-sub" x="332" y="180">kurt over fixed 3 s</text>
+
+    <path class="f1-edge" d="M 236 76 L 316 76" marker-end="url(#ah)"/>
+    <text class="f1-lab" x="244" y="68">amplitude</text>
+    <path class="f1-edge" d="M 236 179 L 276 179 L 276 118 L 316 118" marker-end="url(#ah)"/>
+    <text class="f1-lab" x="244" y="196">onset times</text>
+
+    <text class="f1-stage" x="608" y="34">S3</text>
+    <rect class="f1-key" x="608" y="46" width="248" height="166" rx="4"/>
+    <text class="f1-key-t" x="624" y="70">cycle validity</text>
+    <text class="f1-sub" x="624" y="92">the ONLY decision made</text>
+    <text class="f1-sub" x="624" y="114">rate_implausible  RP &lt; 2.0 s</text>
+    <text class="f1-sub" x="624" y="131">shape             kurt &gt; 12.10</text>
+    <text class="f1-sub" x="624" y="148">flat              std &lt; 0.10 x med</text>
+    <text class="f1-sub" x="624" y="165">extreme           RA &gt; 7.6 x med</text>
+    <text class="f1-sub" x="624" y="188">out: valid | gate name</text>
+
+    <path class="f1-edge-key" d="M 528 129 L 608 129" marker-end="url(#ahk)"/>
+
+    <text class="f1-stage" x="936" y="34">S5</text>
+    <rect class="f1-box" x="936" y="46" width="220" height="62" rx="4"/>
+    <text class="f1-title" x="952" y="70">RP/RA/RFR series</text>
+    <text class="f1-sub" x="952" y="90">invalid -&gt; NaN hole</text>
+
+    <text class="f1-stage" x="936" y="140">S6</text>
+    <rect class="f1-box" x="936" y="152" width="220" height="62" rx="4"/>
+    <text class="f1-title" x="952" y="176">trial admission</text>
+    <text class="f1-sub" x="952" y="196">valid frac &gt;= 0.60</text>
+
+    <text class="f1-stage" x="936" y="246">S8</text>
+    <rect class="f1-box" x="936" y="258" width="220" height="62" rx="4"/>
+    <text class="f1-title" x="952" y="282">balance test</text>
+    <text class="f1-sub" x="952" y="302">Eve vs Mor, by seconds</text>
+
+    <path class="f1-edge-key" d="M 856 100 L 896 100 L 896 77 L 936 77" marker-end="url(#ahk)"/>
+    <path class="f1-edge-key" d="M 856 129 L 896 129 L 896 183 L 936 183" marker-end="url(#ahk)"/>
+    <path class="f1-edge-key" d="M 856 158 L 896 158 L 896 289 L 936 289" marker-end="url(#ahk)"/>
+    <text class="f1-lab-key" x="866" y="70">reads</text>
+
+    <text class="f1-stage" x="608" y="284">S7</text>
+    <rect class="f1-box" x="608" y="296" width="248" height="66" rx="4"/>
+    <text class="f1-title" x="624" y="320">CRF-GLM, pooled session</text>
+    <text class="f1-sub" x="624" y="340">rejected spans blanked in y</text>
+
+    <path class="f1-edge" d="M 1046 108 L 1046 128 L 1176 128 L 1176 400 L 732 400 L 732 362" marker-end="url(#ah)"/>
+    <text class="f1-lab" x="742" y="414">series y</text>
+    <path class="f1-edge" d="M 936 214 L 896 214 L 896 329 L 856 329" marker-end="url(#ah)"/>
+    <text class="f1-lab" x="866" y="345">event train</text>
+
+    <rect class="f1-box" x="24" y="296" width="212" height="66" rx="4"/>
+    <text class="f1-title" x="40" y="320">endpoint</text>
+    <text class="f1-sub" x="40" y="340">paired Wilcoxon on B1</text>
+    <path class="f1-edge" d="M 608 329 L 236 329" marker-end="url(#ah)"/>
+
+    <text class="f1-lab" x="256" y="322">per-subject mean</text>
+    <text class="f1-lab" x="24" y="442">No consumer re-derives validity from window summary statistics. That is the whole change.</text>
+  </svg>
+  </div>
+  <figcaption>Because <b>S3 is the only place validity is decided</b>, the same per-cycle
+  verdict reaches three consumers that previously each had their own gate: the series
+  builder turns an invalid breath into a hole rather than a value, trial admission counts
+  it, and the balance test audits it. A per-trial scheme instead collapses the window to
+  summary statistics first, so the three consumers can disagree about what was bad.</figcaption>
+</figure>
+
+<figure>
+  <h2>Figure 2 — the same mechanism on real data · EV15 / evening · t = 818-868 s</h2>
+  <div class="card">
+  <svg viewBox="0 0 1180 330" role="img" aria-label="Real airflow trace with an amplitude burst at 832 seconds. The burst breath is gated as shape, the three following breaths as extreme. Trial 29 keeps 3 of 4 breaths and is admitted, trial 30 keeps none and is rejected, trial 31 keeps 2 of 3 and is admitted.">
+      <rect class="g-shape" x="384.9" y="44" width="113.0" height="202"/>
+      <rect class="g-extreme" x="497.9" y="44" width="162.3" height="202"/>
+      <rect class="g-extreme" x="660.2" y="44" width="68.3" height="202"/>
+      <rect class="g-extreme" x="728.5" y="44" width="204.9" height="202"/>
+      <line class="tick" x1="153.9" y1="44" x2="153.9" y2="252"/>
+      <line class="tick" x1="226.4" y1="44" x2="226.4" y2="252"/>
+      <line class="tick" x1="306.5" y1="44" x2="306.5" y2="252"/>
+      <line class="tick" x1="384.9" y1="44" x2="384.9" y2="252"/>
+      <line class="tick" x1="497.9" y1="44" x2="497.9" y2="252"/>
+      <line class="tick" x1="660.2" y1="44" x2="660.2" y2="252"/>
+      <line class="tick" x1="728.5" y1="44" x2="728.5" y2="252"/>
+      <line class="tick" x1="933.4" y1="44" x2="933.4" y2="252"/>
+      <line class="tick" x1="1012.7" y1="44" x2="1012.7" y2="252"/>
+      <line class="tick" x1="1091.9" y1="44" x2="1091.9" y2="252"/>
+      <line class="axis" x1="78" y1="207.5" x2="1132" y2="207.5"/>
+      <path class="wave" d="M 78.0,209.8 L 80.5,209.6 L 83.1,209.4 L 85.6,209.2 L 88.1,208.8 L 90.6,208.9 L 93.2,209.0 L 95.7,209.2 L 98.2,209.9 L 100.8,211.0 L 103.3,210.7 L 105.8,210.2 L 108.4,209.1 L 110.9,209.0 L 113.4,209.2 L 115.9,208.7 L 118.5,208.6 L 121.0,208.3 L 123.5,207.7 L 126.1,205.3 L 128.6,202.1 L 131.1,201.3 L 133.7,200.9 L 136.2,201.7 L 138.7,202.8 L 141.2,202.9 L 143.8,204.3 L 146.3,204.6 L 148.8,205.0 L 151.4,207.1 L 153.9,209.2 L 156.4,209.8 L 158.9,209.7 L 161.5,210.3 L 164.0,210.4 L 166.5,210.2 L 169.1,209.8 L 171.6,210.1 L 174.1,210.0 L 176.7,209.6 L 179.2,209.5 L 181.7,209.3 L 184.2,209.1 L 186.8,208.9 L 189.3,208.6 L 191.8,208.7 L 194.4,208.7 L 196.9,208.6 L 199.4,208.5 L 202.0,207.6 L 204.5,205.2 L 207.0,204.3 L 209.5,204.0 L 212.1,203.8 L 214.6,204.0 L 217.1,204.5 L 219.7,205.0 L 222.2,205.5 L 224.7,207.5 L 227.2,209.2 L 229.8,209.9 L 232.3,210.1 L 234.8,210.3 L 237.4,210.8 L 239.9,210.6 L 242.4,210.2 L 245.0,210.3 L 247.5,210.0 L 250.0,209.7 L 252.5,209.3 L 255.1,209.0 L 257.6,209.1 L 260.1,209.0 L 262.7,208.8 L 265.2,208.8 L 267.7,208.8 L 270.2,208.7 L 272.8,208.6 L 275.3,208.4 L 277.8,208.4 L 280.4,208.5 L 282.9,207.9 L 285.4,206.2 L 288.0,205.4 L 290.5,204.7 L 293.0,204.0 L 295.5,203.8 L 298.1,203.7 L 300.6,203.7 L 303.1,205.4 L 305.7,208.2 L 308.2,209.2 L 310.7,210.0 L 313.3,210.4 L 315.8,210.4 L 318.3,210.3 L 320.8,209.8 L 323.4,209.9 L 325.9,209.7 L 328.4,209.3 L 331.0,209.4 L 333.5,209.3 L 336.0,209.1 L 338.5,208.9 L 341.1,208.6 L 343.6,208.6 L 346.1,208.7 L 348.7,208.7 L 351.2,208.6 L 353.7,208.6 L 356.3,208.6 L 358.8,208.5 L 361.3,208.4 L 363.8,207.5 L 366.4,205.6 L 368.9,205.1 L 371.4,204.1 L 374.0,203.8 L 376.5,204.0 L 379.0,204.3 L 381.6,204.7 L 384.1,205.7 L 386.6,207.7 L 389.1,209.6 L 391.7,210.8 L 394.2,211.2 L 396.7,217.1 L 399.3,214.9 L 401.8,219.2 L 404.3,214.7 L 406.8,211.7 L 409.4,210.0 L 411.9,209.7 L 414.4,208.6 L 417.0,208.8 L 419.5,209.5 L 422.0,208.7 L 424.6,207.9 L 427.1,208.1 L 429.6,207.9 L 432.1,208.4 L 434.7,208.3 L 437.2,208.3 L 439.7,208.1 L 442.3,207.9 L 444.8,208.0 L 447.3,207.9 L 449.9,207.8 L 452.4,206.4 L 454.9,203.9 L 457.4,200.1 L 460.0,198.3 L 462.5,196.5 L 465.0,200.0 L 467.6,198.0 L 470.1,170.0 L 472.6,119.5 L 475.1,56.8 L 477.7,59.0 L 480.2,90.6 L 482.7,87.2 L 485.3,73.4 L 487.8,95.4 L 490.3,183.2 L 492.9,218.7 L 495.4,219.6 L 497.9,220.5 L 500.4,236.4 L 503.0,231.2 L 505.5,228.0 L 508.0,226.6 L 510.6,223.8 L 513.1,222.1 L 515.6,221.3 L 518.2,221.0 L 520.7,219.9 L 523.2,220.9 L 525.7,219.4 L 528.3,218.8 L 530.8,218.6 L 533.3,218.3 L 535.9,216.5 L 538.4,216.4 L 540.9,216.4 L 543.4,216.6 L 546.0,216.6 L 548.5,216.6 L 551.0,216.3 L 553.6,216.3 L 556.1,215.4 L 558.6,215.2 L 561.2,215.3 L 563.7,215.2 L 566.2,215.1 L 568.7,215.1 L 571.3,214.8 L 573.8,214.8 L 576.3,214.5 L 578.9,213.6 L 581.4,213.5 L 583.9,213.6 L 586.4,213.5 L 589.0,213.1 L 591.5,212.7 L 594.0,213.2 L 596.6,213.2 L 599.1,214.7 L 601.6,219.0 L 604.2,219.1 L 606.7,217.8 L 609.2,216.5 L 611.7,215.6 L 614.3,214.9 L 616.8,213.8 L 619.3,213.3 L 621.9,212.8 L 624.4,212.4 L 626.9,212.0 L 629.5,211.7 L 632.0,211.8 L 634.5,211.7 L 637.0,211.2 L 639.6,210.3 L 642.1,205.1 L 644.6,202.0 L 647.2,201.3 L 649.7,199.9 L 652.2,201.2 L 654.7,205.2 L 657.3,206.7 L 659.8,208.0 L 662.3,209.5 L 664.9,211.5 L 667.4,212.5 L 669.9,212.9 L 672.5,212.8 L 675.0,213.4 L 677.5,212.6 L 680.0,212.6 L 682.6,212.7 L 685.1,212.7 L 687.6,212.4 L 690.2,211.9 L 692.7,211.9 L 695.2,212.2 L 697.8,210.7 L 700.3,210.3 L 702.8,205.5 L 705.3,201.7 L 707.9,178.6 L 710.4,108.7 L 712.9,63.6 L 715.5,64.0 L 718.0,150.2 L 720.5,195.8 L 723.0,213.9 L 725.6,214.6 L 728.1,215.1 L 730.6,215.8 L 733.2,216.5 L 735.7,227.7 L 738.2,225.7 L 740.8,217.3 L 743.3,216.4 L 745.8,216.4 L 748.3,217.6 L 750.9,217.3 L 753.4,217.1 L 755.9,217.6 L 758.5,219.1 L 761.0,218.5 L 763.5,216.7 L 766.1,216.0 L 768.6,215.8 L 771.1,215.7 L 773.6,216.3 L 776.2,214.5 L 778.7,214.6 L 781.2,214.7 L 783.8,214.3 L 786.3,214.4 L 788.8,214.2 L 791.3,213.8 L 793.9,213.3 L 796.4,212.7 L 798.9,212.5 L 801.5,212.8 L 804.0,212.7 L 806.5,212.6 L 809.1,212.2 L 811.6,212.2 L 814.1,212.2 L 816.6,212.0 L 819.2,211.6 L 821.7,211.3 L 824.2,211.0 L 826.8,210.6 L 829.3,208.3 L 831.8,207.2 L 834.4,207.8 L 836.9,207.1 L 839.4,206.7 L 841.9,208.5 L 844.5,207.6 L 847.0,207.4 L 849.5,208.0 L 852.1,208.8 L 854.6,210.7 L 857.1,211.2 L 859.6,211.4 L 862.2,211.7 L 864.7,211.5 L 867.2,211.2 L 869.8,211.0 L 872.3,211.1 L 874.8,210.8 L 877.4,210.7 L 879.9,210.7 L 882.4,210.5 L 884.9,210.3 L 887.5,210.2 L 890.0,210.3 L 892.5,210.1 L 895.1,209.8 L 897.6,209.7 L 900.1,209.6 L 902.6,209.5 L 905.2,209.3 L 907.7,209.3 L 910.2,209.3 L 912.8,209.0 L 915.3,207.7 L 917.8,206.7 L 920.4,206.1 L 922.9,205.7 L 925.4,205.8 L 927.9,206.1 L 930.5,206.4 L 933.0,207.2 L 935.5,208.4 L 938.1,209.5 L 940.6,210.2 L 943.1,210.3 L 945.7,210.5 L 948.2,210.5 L 950.7,210.3 L 953.2,210.5 L 955.8,210.1 L 958.3,209.8 L 960.8,209.6 L 963.4,209.3 L 965.9,209.2 L 968.4,209.0 L 970.9,208.7 L 973.5,208.7 L 976.0,208.9 L 978.5,208.7 L 981.1,208.6 L 983.6,208.5 L 986.1,208.5 L 988.7,208.0 L 991.2,207.0 L 993.7,205.8 L 996.2,204.7 L 998.8,204.7 L 1001.3,205.1 L 1003.8,205.5 L 1006.4,206.2 L 1008.9,206.5 L 1011.4,207.1 L 1014.0,208.5 L 1016.5,209.2 L 1019.0,209.6 L 1021.5,210.0 L 1024.1,209.8 L 1026.6,209.4 L 1029.1,209.3 L 1031.7,209.2 L 1034.2,209.2 L 1036.7,209.1 L 1039.2,208.8 L 1041.8,208.9 L 1044.3,208.7 L 1046.8,208.4 L 1049.4,208.4 L 1051.9,208.4 L 1054.4,208.3 L 1057.0,208.2 L 1059.5,208.0 L 1062.0,207.9 L 1064.5,207.5 L 1067.1,206.3 L 1069.6,205.1 L 1072.1,205.0 L 1074.7,205.0 L 1077.2,205.3 L 1079.7,205.5 L 1082.3,205.7 L 1084.8,205.6 L 1087.3,206.2 L 1089.8,208.1 L 1092.4,208.7 L 1094.9,209.2 L 1097.4,209.2 L 1100.0,209.1 L 1102.5,209.1 L 1105.0,208.9 L 1107.5,209.1 L 1110.1,209.1 L 1112.6,208.9 L 1115.1,209.0 L 1117.7,208.9 L 1120.2,208.9 L 1122.7,208.4 L 1125.3,208.0 L 1127.8,208.1 L 1130.3,208.2 L 1130.3,208.3 L 1127.8,208.2 L 1125.3,208.2 L 1122.7,208.6 L 1120.2,208.9 L 1117.7,209.0 L 1115.1,209.2 L 1112.6,209.0 L 1110.1,209.2 L 1107.5,209.3 L 1105.0,209.0 L 1102.5,209.2 L 1100.0,209.2 L 1097.4,209.5 L 1094.9,209.4 L 1092.4,209.1 L 1089.8,208.6 L 1087.3,207.5 L 1084.8,205.9 L 1082.3,205.9 L 1079.7,205.7 L 1077.2,205.4 L 1074.7,205.2 L 1072.1,205.1 L 1069.6,206.0 L 1067.1,207.3 L 1064.5,208.0 L 1062.0,208.0 L 1059.5,208.2 L 1057.0,208.3 L 1054.4,208.4 L 1051.9,208.5 L 1049.4,208.5 L 1046.8,208.8 L 1044.3,208.9 L 1041.8,209.0 L 1039.2,209.0 L 1036.7,209.1 L 1034.2,209.2 L 1031.7,209.3 L 1029.1,209.5 L 1026.6,209.6 L 1024.1,210.1 L 1021.5,210.2 L 1019.0,209.8 L 1016.5,209.6 L 1014.0,209.0 L 1011.4,208.0 L 1008.9,206.8 L 1006.4,206.5 L 1003.8,205.8 L 1001.3,205.3 L 998.8,204.9 L 996.2,205.3 L 993.7,206.7 L 991.2,207.9 L 988.7,208.3 L 986.1,208.5 L 983.6,208.6 L 981.1,208.6 L 978.5,208.8 L 976.0,209.0 L 973.5,208.9 L 970.9,208.9 L 968.4,209.2 L 965.9,209.3 L 963.4,209.5 L 960.8,209.8 L 958.3,210.0 L 955.8,210.4 L 953.2,210.7 L 950.7,210.6 L 948.2,210.8 L 945.7,210.7 L 943.1,210.4 L 940.6,210.3 L 938.1,210.0 L 935.5,209.2 L 933.0,207.8 L 930.5,206.7 L 927.9,206.2 L 925.4,206.0 L 922.9,205.9 L 920.4,206.5 L 917.8,207.4 L 915.3,208.5 L 912.8,209.2 L 910.2,209.4 L 907.7,209.4 L 905.2,209.5 L 902.6,209.5 L 900.1,209.6 L 897.6,209.8 L 895.1,210.1 L 892.5,210.3 L 890.0,210.4 L 887.5,210.4 L 884.9,210.5 L 882.4,210.6 L 879.9,210.7 L 877.4,210.8 L 874.8,211.0 L 872.3,211.1 L 869.8,211.1 L 867.2,211.3 L 864.7,211.7 L 862.2,211.7 L 859.6,211.7 L 857.1,211.3 L 854.6,211.1 L 852.1,210.3 L 849.5,208.5 L 847.0,207.9 L 844.5,208.4 L 841.9,208.9 L 839.4,208.1 L 836.9,207.6 L 834.4,208.0 L 831.8,207.8 L 829.3,210.2 L 826.8,210.9 L 824.2,211.2 L 821.7,211.6 L 819.2,211.7 L 816.6,212.2 L 814.1,212.3 L 811.6,212.3 L 809.1,212.5 L 806.5,212.7 L 804.0,212.8 L 801.5,212.9 L 798.9,212.7 L 796.4,213.0 L 793.9,213.9 L 791.3,214.4 L 788.8,214.5 L 786.3,214.7 L 783.8,214.6 L 781.2,215.8 L 778.7,215.5 L 776.2,215.5 L 773.6,217.6 L 771.1,216.0 L 768.6,216.1 L 766.1,216.4 L 763.5,217.1 L 761.0,220.0 L 758.5,219.8 L 755.9,219.0 L 753.4,217.6 L 750.9,217.6 L 748.3,218.3 L 745.8,216.8 L 743.3,217.2 L 740.8,221.2 L 738.2,227.9 L 735.7,229.7 L 733.2,228.7 L 730.6,216.7 L 728.1,215.6 L 725.6,215.0 L 723.0,215.4 L 720.5,209.5 L 718.0,186.0 L 715.5,112.1 L 712.9,89.6 L 710.4,152.4 L 707.9,198.8 L 705.3,203.6 L 702.8,208.8 L 700.3,210.8 L 697.8,211.6 L 695.2,212.4 L 692.7,212.1 L 690.2,212.1 L 687.6,212.7 L 685.1,212.9 L 682.6,212.7 L 680.0,212.7 L 677.5,213.0 L 675.0,213.5 L 672.5,213.3 L 669.9,212.9 L 667.4,212.8 L 664.9,212.4 L 662.3,211.1 L 659.8,209.0 L 657.3,207.5 L 654.7,206.4 L 652.2,204.3 L 649.7,201.2 L 647.2,201.7 L 644.6,203.6 L 642.1,208.7 L 639.6,211.3 L 637.0,211.5 L 634.5,211.9 L 632.0,211.9 L 629.5,211.7 L 626.9,212.5 L 624.4,212.8 L 621.9,213.1 L 619.3,213.7 L 616.8,214.3 L 614.3,215.4 L 611.7,216.2 L 609.2,216.8 L 606.7,219.1 L 604.2,219.7 L 601.6,219.2 L 599.1,217.9 L 596.6,213.5 L 594.0,213.8 L 591.5,213.2 L 589.0,213.4 L 586.4,213.5 L 583.9,213.6 L 581.4,213.8 L 578.9,213.9 L 576.3,215.2 L 573.8,214.9 L 571.3,215.0 L 568.7,215.2 L 566.2,215.3 L 563.7,215.4 L 561.2,215.3 L 558.6,215.3 L 556.1,215.8 L 553.6,216.5 L 551.0,216.4 L 548.5,216.6 L 546.0,216.7 L 543.4,216.7 L 540.9,216.5 L 538.4,216.6 L 535.9,217.6 L 533.3,219.2 L 530.8,219.1 L 528.3,219.3 L 525.7,220.0 L 523.2,221.2 L 520.7,220.9 L 518.2,221.7 L 515.6,221.4 L 513.1,223.3 L 510.6,226.0 L 508.0,227.3 L 505.5,228.7 L 503.0,236.5 L 500.4,239.0 L 497.9,229.5 L 495.4,220.7 L 492.9,220.1 L 490.3,214.4 L 487.8,145.1 L 485.3,84.1 L 482.7,121.4 L 480.2,120.7 L 477.7,68.0 L 475.1,104.6 L 472.6,160.8 L 470.1,191.6 L 467.6,201.3 L 465.0,201.4 L 462.5,197.9 L 460.0,199.6 L 457.4,202.6 L 454.9,206.0 L 452.4,207.5 L 449.9,208.0 L 447.3,208.0 L 444.8,208.1 L 442.3,208.2 L 439.7,208.3 L 437.2,208.5 L 434.7,208.5 L 432.1,208.5 L 429.6,208.5 L 427.1,208.1 L 424.6,208.4 L 422.0,209.1 L 419.5,209.8 L 417.0,209.6 L 414.4,209.5 L 411.9,210.3 L 409.4,211.2 L 406.8,213.1 L 404.3,217.7 L 401.8,219.8 L 399.3,217.9 L 396.7,218.8 L 394.2,213.7 L 391.7,211.1 L 389.1,210.7 L 386.6,208.8 L 384.1,206.8 L 381.6,205.2 L 379.0,204.6 L 376.5,204.2 L 374.0,204.0 L 371.4,204.8 L 368.9,205.5 L 366.4,207.1 L 363.8,208.3 L 361.3,208.5 L 358.8,208.6 L 356.3,208.6 L 353.7,208.7 L 351.2,208.6 L 348.7,208.7 L 346.1,208.9 L 343.6,208.8 L 341.1,208.9 L 338.5,209.1 L 336.0,209.2 L 333.5,209.3 L 331.0,209.4 L 328.4,209.5 L 325.9,210.0 L 323.4,210.1 L 320.8,210.0 L 318.3,210.5 L 315.8,210.4 L 313.3,210.5 L 310.7,210.3 L 308.2,209.7 L 305.7,209.0 L 303.1,207.3 L 300.6,204.8 L 298.1,204.0 L 295.5,203.9 L 293.0,204.5 L 290.5,205.2 L 288.0,206.0 L 285.4,207.3 L 282.9,208.5 L 280.4,208.6 L 277.8,208.6 L 275.3,208.6 L 272.8,208.7 L 270.2,208.7 L 267.7,208.8 L 265.2,208.9 L 262.7,209.0 L 260.1,209.3 L 257.6,209.3 L 255.1,209.3 L 252.5,209.7 L 250.0,209.9 L 247.5,210.2 L 245.0,210.4 L 242.4,210.5 L 239.9,210.9 L 237.4,211.2 L 234.8,210.8 L 232.3,210.3 L 229.8,210.2 L 227.2,209.6 L 224.7,208.9 L 222.2,206.9 L 219.7,205.3 L 217.1,205.1 L 214.6,204.3 L 212.1,204.0 L 209.5,204.1 L 207.0,205.0 L 204.5,206.6 L 202.0,208.5 L 199.4,208.6 L 196.9,208.7 L 194.4,208.8 L 191.8,208.8 L 189.3,208.9 L 186.8,209.0 L 184.2,209.2 L 181.7,209.6 L 179.2,209.7 L 176.7,209.8 L 174.1,210.2 L 171.6,210.3 L 169.1,210.1 L 166.5,210.5 L 164.0,210.4 L 161.5,210.4 L 158.9,210.2 L 156.4,209.9 L 153.9,209.8 L 151.4,208.9 L 148.8,206.3 L 146.3,205.0 L 143.8,204.6 L 141.2,204.0 L 138.7,203.2 L 136.2,202.9 L 133.7,201.6 L 131.1,202.1 L 128.6,204.4 L 126.1,206.9 L 123.5,208.3 L 121.0,208.5 L 118.5,208.7 L 115.9,209.1 L 113.4,209.5 L 110.9,209.3 L 108.4,209.7 L 105.8,210.4 L 103.3,210.9 L 100.8,211.2 L 98.2,210.8 L 95.7,209.5 L 93.2,209.1 L 90.6,208.9 L 88.1,209.0 L 85.6,209.3 L 83.1,209.5 L 80.5,209.8 L 78.0,209.9 Z"/>
+      <text class="gate" x="441.4" y="36" text-anchor="middle">shape</text>
+      <text class="gate" x="579.1" y="36" text-anchor="middle">extreme</text>
+      <text class="gate" x="694.4" y="36" text-anchor="middle">extreme</text>
+      <text class="gate" x="831.0" y="36" text-anchor="middle">extreme</text>
+      <text class="note" x="415.3" y="48.0" text-anchor="middle">RA 0.00682 = 24x session median</text>
+      <text class="axlab" x="120.2" y="268" text-anchor="middle">820 s</text>
+      <text class="axlab" x="331.0" y="268" text-anchor="middle">830 s</text>
+      <text class="axlab" x="541.8" y="268" text-anchor="middle">840 s</text>
+      <text class="axlab" x="752.6" y="268" text-anchor="middle">850 s</text>
+      <text class="axlab" x="963.4" y="268" text-anchor="middle">860 s</text>
+      <rect class="tr-admit" x="225.4" y="278" width="253.0" height="26" rx="3"/>
+      <text class="trlab" x="233.4" y="295">trial 29</text>
+      <text class="trfrac" x="470.4" y="295" text-anchor="end">3/4 = 0.75</text>
+      <rect class="tr-reject" x="497.6" y="278" width="253.0" height="26" rx="3"/>
+      <text class="trlab" x="505.6" y="295">trial 30</text>
+      <text class="trfrac" x="742.6" y="295" text-anchor="end">0/4 = 0.00</text>
+      <rect class="tr-admit" x="786.0" y="278" width="253.0" height="26" rx="3"/>
+      <text class="trlab" x="794.0" y="295">trial 31</text>
+      <text class="trfrac" x="1031.0" y="295" text-anchor="end">2/3 = 0.67</text>
+      <text class="axlab" x="68" y="295" text-anchor="end">windows</text>
+      <text class="axlab" x="68" y="145.0" text-anchor="end">airflow</text>
+  </svg>
+  </div>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--warn-soft);border-color:var(--warn)"></i>shape · kurtosis &gt; 12.10</span>
+    <span><i class="sw" style="background:var(--reject-soft);border-color:var(--reject)"></i>extreme · RA &gt; 7.6x session median</span>
+    <span><i class="sw" style="background:var(--accent-soft);border-color:var(--accent)"></i>trial admitted</span>
+    <span>dashed vertical = inspiration onset (cycle boundary)</span>
+  </div>
+  <figcaption>The burst breath at t = 832.6 s falls inside <b>two</b> trial windows. A per-trial
+  gate has one boolean per trial, so both trials share its fate. Here it is 1 bad breath of 4
+  in trial 29 - admitted, with only that breath's samples punched out of the RA series - and
+  4 of 4 in trial 30, which is rejected outright. Trial 31 recovers on the second clean breath.
+  Cohort-wide this admits <b>1718 of 1734 trials (99.1%)</b>.</figcaption>
+</figure>
+
+<figure>
+  <h2>Figure 3 — what the balance test returns</h2>
+  <div class="card">
+  <table>
+    <thead><tr><th>gate</th><th class="num">Evening</th><th class="num">Morning</th><th class="num">p</th><th>verdict</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">rate_implausible</td><td class="num">0.64%</td><td class="num">0.49%</td><td class="num">0.0048</td><td class="fail">fails</td></tr>
+      <tr><td class="mono">shape</td><td class="num">1.30%</td><td class="num">1.23%</td><td class="num">0.377</td><td class="pass">passes</td></tr>
+      <tr><td class="mono">flat</td><td class="num">1.90%</td><td class="num">0.27%</td><td class="num">1.6e-110</td><td class="fail">fails</td></tr>
+      <tr><td class="mono">extreme</td><td class="num">1.01%</td><td class="num">2.01%</td><td class="num">2.1e-30</td><td class="fail">fails</td></tr>
+      <tr><td class="mono"><b>overall</b></td><td class="num"><b>4.86%</b></td><td class="num"><b>3.99%</b></td><td class="num"><b>2.6e-09</b></td><td class="fail">fails</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figcaption>Percent of recorded breath time removed, weighted by <b>seconds, not cycle
+  count</b> - a 300 s dead span and a 3 s breath are not two equal units. Only
+  <code>shape</code> is balanced. <code>flat</code> removes 7x more Evening time;
+  <code>extreme</code> removes 2x more Morning time, in the opposite direction. This is
+  a finding, not a tuning target: a threshold moved until this table goes green is a
+  threshold fitted to the contrast the study is testing.</figcaption>
+</figure>
+
+<footer>
+  All numbers computed from the Layer-1 cache (24 subjects, 47 sessions, 20604 breath
+  cycles). Thresholds are cohort percentiles taken condition-blind: kurtosis 12.10 = p99;
+  the log-RA scale is frozen at 0.303 because per-session MAD varies 5.0x across
+  recordings. Caveats: <code>SUBJECTS_EXCLUDE</code> was not applied, and the prototype
+  detector omits despiking, so cycle counts will not match the shipped
+  <code>detect_cycles</code> exactly. No beta or endpoint p-value is claimed here.
+</footer>
+</div>

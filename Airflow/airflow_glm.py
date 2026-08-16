@@ -20,15 +20,48 @@ def _butter_bandpass(lowcut, highcut, fs, order=2):
     b, a = butter(order, [low, high], btype='band')
     return b, a
 
-def _butter_bandpass_filter(data, lowcut, highcut, fs, order=2):
-    b, a = _butter_bandpass(lowcut, highcut, fs, order=order)
-    y = filtfilt(b, a, data)
-    return y
-
 def _butter_lowpass_filter(data, cutoff, fs, order=2):
     nyq = 0.5 * fs
     b, a = butter(order, cutoff / nyq, btype='low')
     return filtfilt(b, a, data)
+
+def native_envelope(signal_native, native_sfreq, cache_sfreq, n_cache):
+    """Per-cache-sample min/max of the NATIVE-rate trace.
+
+    pspm_resp_pp.m Stage 5 measures RA = range(resp(win)) on the untouched
+    native-rate signal. This project may only cache 25 Hz traces (CLAUDE.md),
+    at which a sharp inspiratory-flow apex spans ~3 samples and max-min
+    underestimates it. These two arrays are the cache grid's running extremes
+    of the native trace, so range() over any cycle window recovers the native
+    peak height without caching the native trace itself."""
+    x = np.asarray(signal_native, dtype=np.float64)
+    n_native = len(x)
+    ratio = float(native_sfreq) / float(cache_sfreq)
+
+    edges = np.rint(np.arange(n_cache + 1) * ratio).astype(np.int64)
+    edges = np.clip(edges, 0, n_native)
+
+    env_min = np.full(n_cache, np.nan)
+    env_max = np.full(n_cache, np.nan)
+
+    nonempty = edges[:-1] < edges[1:]
+    if not np.any(nonempty):
+        return env_min, env_max
+
+    starts = edges[:-1][nonempty]
+    env_min[nonempty] = np.minimum.reduceat(x, starts)[: len(starts)]
+    env_max[nonempty] = np.maximum.reduceat(x, starts)[: len(starts)]
+
+    if not np.all(nonempty):
+        idx = np.flatnonzero(nonempty)
+        fill = np.searchsorted(idx, np.arange(n_cache), side="right") - 1
+        fill = np.clip(fill, 0, len(idx) - 1)
+        empty = ~nonempty
+        env_min[empty] = env_min[idx[fill[empty]]]
+        env_max[empty] = env_max[idx[fill[empty]]]
+
+    return env_min, env_max
+
 
 def process_session(mff_path, ratings_df, config):
     """ratings_df must be the FULL, unfiltered CSV (trial_epochs.load_all_trials_ratings)
@@ -77,11 +110,16 @@ def process_session(mff_path, ratings_df, config):
             native_sfreq, order=2),
         picks=0, channel_wise=True, verbose=False)
 
+    signal_native = raw.get_data(picks=0)[0].astype(np.float64)
+
     raw.resample(sfreq=config.CACHE_SFREQ, npad="auto", verbose=False)
 
     cache_sfreq = raw.info["sfreq"]
     signal_raw  = raw.get_data(picks=0)[0]
     times_raw   = raw.times
+
+    env_min, env_max = native_envelope(signal_native, native_sfreq,
+                                       cache_sfreq, len(signal_raw))
 
     # Trigger sample indices are in native_sfreq space (from the un-resampled
     # raw); convert to seconds here so they're valid regardless of CACHE_SFREQ.
@@ -106,12 +144,15 @@ def process_session(mff_path, ratings_df, config):
         })
 
     payload = {
-        "sfreq":       cache_sfreq,
-        "channel":     target_ch,
-        "signal_raw":  signal_raw,
-        "times_raw":   times_raw,
-        "trials_meta": trials_meta,
-        "d101_time":   d101_sample / native_sfreq,
+        "sfreq":         cache_sfreq,
+        "channel":       target_ch,
+        "signal_raw":    signal_raw,
+        "times_raw":     times_raw,
+        "trials_meta":   trials_meta,
+        "d101_time":     d101_sample / native_sfreq,
+        "env_min":       env_min,
+        "env_max":       env_max,
+        "native_sfreq":  native_sfreq,
     }
     return payload
 
@@ -217,7 +258,8 @@ def phase1_filter_downsample(signal_raw, native_sfreq, target_sfreq=10.0,
 # ── STAGE 2 — Cycle Detection [PsPM-faithful] ───────────────────────────────
 
 def detect_cycles(raw_z, sfreq, signal_raw, native_sfreq,
-                   median_win_sec=1.0, refractory_sec=1.0):
+                   median_win_sec=1.0, refractory_sec=1.0,
+                   env_min=None, env_max=None):
     """Detect inspiration onsets on raw_z, then extract one cycle per breathing
     cycle -- amplitude (RA/RFR) is measured on signal_raw, not raw_z.
 
@@ -276,6 +318,7 @@ def detect_cycles(raw_z, sfreq, signal_raw, native_sfreq,
     # range is inclusive of both ends; Python slicing excludes the stop index,
     # so +1 is added below to match.
     n_native = len(signal_raw)
+    use_env = env_min is not None and env_max is not None
     cycles = []
     for i in range(len(onsets) - 1):
         start, end = onsets[i], onsets[i + 1]
@@ -287,6 +330,11 @@ def detect_cycles(raw_z, sfreq, signal_raw, native_sfreq,
         seg = signal_raw[i0:i1]
         if len(seg) == 0:
             continue
+        if use_env:
+            lo = env_min[i0:i1]
+            hi = env_max[i0:i1]
+            if np.any(np.isfinite(lo)) and np.any(np.isfinite(hi)):
+                seg = np.array([np.nanmin(lo), np.nanmax(hi)])
         # RP = Respiration Period (seconds)
         # RA = Respiration Amplitude (peak-to-trough, in native signal_raw units)
         # RFR = Respiration Flow Rate = RA/RP (native units per second)
@@ -300,47 +348,64 @@ def detect_cycles(raw_z, sfreq, signal_raw, native_sfreq,
     return cycles
 
 
-# ── STAGE 3 — Artifact Layer [PROJECT ADDITION] — Hampel amplitude gate ────
-
-def _hampel_flag_cycles(cycles, k):
-    """Flag breathing cycles whose RA is an UPPER outlier by the Hampel
-    identifier, using the session's own robust spread:
-
-        cutoff  = median(RA) + k * (MAD(RA) * 1.4826)
-        flagged = RA > cutoff
-
-    Upper bound only -- targets amplitude SPIKES (a cough / gross movement /
-    sensor swing read as one giant "breath") and never flags a shallow real
-    breath (that lower-side over-rejection was the failure mode of the earlier
-    session-median *ratio* attempt; see GLM_ARTIFACT_METHOD in
-    airflow_config.py). Because the bound is relative to this session's own
-    median/MAD, it does NOT catch a uniformly-corrupted session (every cycle
-    huge -> median huge too) -- that limitation is documented alongside the
-    config setting.
-
-    Returns a boolean array aligned to `cycles` (all False when there are fewer
-    than 3 cycles, or the MAD is zero, i.e. nothing to compare against)."""
-    n = len(cycles)
-    if n < 3:
-        return np.zeros(n, dtype=bool)
-    ras = np.array([c["RA"] for c in cycles], dtype=float)
-    med = float(np.median(ras))
-    mad = float(np.median(np.abs(ras - med))) * 1.4826
-    if not (mad > 0):
-        return np.zeros(n, dtype=bool)
-    return ras > (med + k * mad)
+def attach_cycle_features(cycles, signal_raw, native_sfreq, peak_times):
+    pk = np.asarray(peak_times, dtype=float)
+    for c in cycles:
+        c["n_peaks"] = int(np.count_nonzero(
+            (pk >= c["onset_time"]) & (pk < c["assign_time"])))
+    return cycles
 
 
-# ── STAGE 3 — Artifact Layer [PROJECT ADDITION] — NK2 cross-check ──────────
-# detect_cycles: finds zero-crossings → produces RP/RA/RFR scores (but accepts noise)
-# NK2: validates real breathing exists (checks amplitude/structure)
-# Logic: If detect_cycles found cycles BUT NK2 found none → reject (artifact gate)
+def admit_trials(trials_meta, cycles, rejected, config):
+    min_frac = getattr(config, "TRIAL_MIN_VALID_FRAC", 0.60)
+    out = {}
+    for meta in trials_meta:
+        w0, w1 = meta["response_range_sec"]
+        win = [bad for c, bad in zip(cycles, rejected)
+               if c["onset_time"] < w1 and c["assign_time"] > w0]
+        n = len(win)
+        frac = (sum(1 for bad in win if not bad) / n) if n else np.nan
+        if not n:
+            admitted, why = False, "no_cycles"
+        elif frac < min_frac:
+            admitted, why = False, "low_valid_fraction"
+        else:
+            admitted, why = True, None
+        out[meta["trial_index"]] = {
+            "admitted": bool(admitted), "admit_reason": why,
+            "valid_frac": float(frac) if n else np.nan, "n_cycles_win": n,
+            "span": (float(w0), float(w1)),
+        }
+    return out
+
+
+def rejected_cycle_spans(cycles, rejected):
+    keep = ~np.asarray(rejected, dtype=bool)
+    spans, i, n = [], 0, len(cycles)
+    while i < n:
+        if keep[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and not keep[j]:
+            j += 1
+        start = cycles[i - 1]["assign_time"] if i > 0 else cycles[i]["onset_time"]
+        end = cycles[j]["assign_time"] if j < n else cycles[n - 1]["assign_time"]
+        spans.append((float(start), float(end)))
+        i = j
+    return spans
+
+
+# ── STAGE 3 — Peak counting [PROJECT ADDITION] — NK2 ───────────────────────
+# Supplies each cycle's n_peaks (via attach_cycle_features), which drives the
+# no_inspiration and lost_lock gates in airflow_qc.classify_cycles. NK2 measures
+# nothing that reaches a score -- RP/RA/RFR come from detect_cycles alone.
+# NOTE: these peaks are found on raw_z, not signal_raw; see spec §9.
 
 
 def _nk2_peak_trough_times(raw_z, sfreq, config):
     """NK2 (khodadad2018) peak/trough times, in seconds -- session-wide,
-    computed once. Used ONLY as a no_cycles_found cross-check (see config);
-    RP/RA/RFR scoring is completely untouched and still comes from detect_cycles."""
+    computed once, and counted per cycle by attach_cycle_features."""
     rsp_signals, _ = nk.rsp_process(
         raw_z.astype(float), sampling_rate=int(round(sfreq)),
         method=config.RSP_CLEAN_METHOD, method_cleaning=config.RSP_PEAK_METHOD_CLEANING)
@@ -352,7 +417,8 @@ def _nk2_peak_trough_times(raw_z, sfreq, config):
 # ── STAGE 4 — Continuous Series (mixed: interpolation/filtering is a project
 # addition; the per-metric HP/LP cutoffs match PsPM's sensitivity filter) ──
 
-def build_continuous_series(cycles, n_samples, sfreq, hp=0.001, lp=1.0, missing_spans=None):
+def build_continuous_series(cycles, n_samples, sfreq, hp=0.001, lp=1.0, missing_spans=None,
+                            rejected=None):
     """Interpolate discrete per-cycle RP/RA/RFR knots (assign_time -> value) to a
     continuous 10 Hz series, then apply a causal per-metric sensitivity filter.
 
@@ -360,6 +426,10 @@ def build_continuous_series(cycles, n_samples, sfreq, hp=0.001, lp=1.0, missing_
     canonical response functions -- not reconstructing waveform shape, but
     reconstructing how breathing *features* (RP/RA/RFR) evolve in time.
     """
+    if rejected is not None and len(rejected) == len(cycles) and len(cycles):
+        missing_spans = list(missing_spans or []) + rejected_cycle_spans(cycles, rejected)
+        cycles = [c for c, bad in zip(cycles, np.asarray(rejected, dtype=bool)) if not bad]
+
     times_full = np.arange(n_samples) / sfreq
     series = {}
 
@@ -398,6 +468,39 @@ def build_continuous_series(cycles, n_samples, sfreq, hp=0.001, lp=1.0, missing_
         series[metric] = filtered
 
     return series, times_full
+
+
+def zscore_subject_series(session_series, config):
+    """Per-subject z-scoring of RA/RFR (Bach et al. 2016 sec. 3.4/4: removes
+    between-subject rib-cage/lung-volume anatomy variance that has nothing to
+    do with reactivity). `session_series` is {sess_key: series_dict} for ONE
+    subject's sessions; stats are pooled across all of them (never computed
+    per-session, which would normalize away the very Eve-vs-Mor contrast this
+    pipeline exists to measure). RP, and any metric config.GLM_ZSCORE_METRIC
+    doesn't enable, is passed through unchanged.
+
+    Pure -- returns a new {sess_key: series_dict}, never mutates the input.
+    Callers that memoize series (e.g. the QC notebook's compute_session_qc_memo)
+    must call this on every use rather than caching its output, since it's
+    cheap (array arithmetic only, no cycle re-detection)."""
+    zscore_metric = getattr(config, "GLM_ZSCORE_METRIC", {"RP": False, "RA": False, "RFR": False})
+    out = {sk: dict(s) for sk, s in session_series.items()}
+    if not out:
+        return out
+    for metric in ("RA", "RFR"):
+        if not zscore_metric.get(metric, False):
+            continue
+        pooled = np.concatenate([
+            s[metric][np.isfinite(s[metric])] for s in session_series.values()
+        ])
+        if pooled.size < 2:
+            continue
+        mu, sd = float(np.mean(pooled)), float(np.std(pooled))
+        if sd < 1e-12:
+            continue
+        for sk in out:
+            out[sk][metric] = (session_series[sk][metric] - mu) / sd
+    return out
 
 
 # ── STAGE 5 — GLM Fit [PsPM-faithful] ───────────────────────────────────────
@@ -502,19 +605,22 @@ def fit_pooled_session_glm(trials, series, sfreq, config, kernel_dur_sec=30.0):
 
       y(t)  =  β0·1  +  Σ_c [ β_c·(δ_c * CRF)(t)  +  γ_c·(δ_c * dCRF)(t) ]
 
-    where c ranges over the session's CONDITIONS (valence label 1=Neg / 2=Neu,
-    taken over the session's ACCEPTED trials only), δ_c is that condition's event
-    train (a unit impulse at every accepted trial's onset_time), and CRF/dCRF are
-    the same orthogonalized, unit-range canonical basis used per-trial. β_c (the
-    CRF column's weight) is that condition's score — ONE number per condition per
-    session, "similar to standard analysis of fMRI data" (pspm_glm.m,
-    GLM_METHOD_FOUNDATIONS.md §5).
+    where c ranges over the session's CONDITIONS, defined by
+    config.GLM_CONDITION_FIELD over the session's ACCEPTED trials only. δ_c is
+    that condition's event train (a unit impulse at every accepted trial's
+    onset_time), and CRF/dCRF are the same orthogonalized, unit-range canonical
+    basis used per-trial. β_c (the CRF column's weight) is that condition's score
+    — ONE number per condition per session, "similar to standard analysis of fMRI
+    data" (pspm_glm.m, GLM_METHOD_FOUNDATIONS.md §5).
 
-    Each accepted trial is written its own (session, condition) β_c as
-    score_<metric>; rejected trials keep NaN and contribute no event to the
-    design. Because the confirmatory cell averages score_<metric> over a
-    session's accepted trials, that mean collapses to a trial-count-weighted mean
-    of the Neg/Neu β_c — one value per session, Evening vs Morning.
+    GLM_CONDITION_FIELD = "none" (current) puts every accepted trial into a single
+    condition, so the design is [intercept, CRF, dCRF] and there is exactly ONE β
+    per session. Evening vs Morning is NOT a condition: each session is its own
+    fit, and the contrast is formed afterwards by pairing a subject's two βs.
+
+    Each accepted trial is written its session's β_c as score_<metric>; rejected
+    trials keep NaN and contribute no event to the design (their samples were
+    already NaN'd from `series` in Pass A).
 
     Faithfulness notes vs pspm_glm.m:
     - PsPM mean-centres the convolved design (model.centering defaults to 1); the
@@ -626,24 +732,11 @@ def run_glm_scoring(sessions_cache, config):
     traces = {}
     qc_info = {}
     subjects_exclude = getattr(config, "SUBJECTS_EXCLUDE", {})
-    artifact_method  = getattr(config, "GLM_ARTIFACT_METHOD", "hampel_reject_trials")
-    artifact_k       = getattr(config, "GLM_ARTIFACT_K", 3.5)
     estimation       = getattr(config, "GLM_ESTIMATION", "per_trial")
-    if artifact_method == "hampel_reject_trials" and estimation == "pooled_session":
-        raise ValueError(
-            "GLM_ARTIFACT_METHOD='hampel_reject_trials' + GLM_ESTIMATION='pooled_session' "
-            "is forbidden: one contaminated cycle can flip the pooled beta's sign for both "
-            "conditions. Use 'manual_exclude' or 'hampel_drop_cycles' with pooled_session, "
-            "or 'hampel_reject_trials' with per_trial."
-        )
-    # SUBJECTS_EXCLUDE is ALWAYS honoured, regardless of GLM_ARTIFACT_METHOD:
-    # it parks hand-flagged whole-session contamination (e.g. DA01's session-wide
-    # saturation) that the Hampel bound structurally cannot catch, because that
-    # bound is relative to each session's OWN median/MAD (see _hampel_flag_cycles
-    # docstring and GLM_ARTIFACT_METHOD in airflow_config.py). GLM_ARTIFACT_METHOD
-    # then controls only the per-trial/per-cycle handling applied to every
-    # session that ISN'T parked here. Keys may be "SUBJ" (whole subject) or
-    # "SUBJ/sess" (one session).
+    # SUBJECTS_EXCLUDE parks hand-flagged whole-session contamination (e.g.
+    # DA01's session-wide saturation) that no session-relative gate can catch,
+    # because such a gate's reference is that same corrupted session. Keys may
+    # be "SUBJ" (whole subject) or "SUBJ/sess" (one session).
     for subj, sess_dict in sorted(sessions_cache.items()):
         if subj in subjects_exclude:
             continue
@@ -651,6 +744,10 @@ def run_glm_scoring(sessions_cache, config):
         traces[subj] = {}
         qc_info[subj] = {}
 
+        # ── Pass A: build each session's cycles/series, but don't fit yet ──
+        # (z-scoring below needs every session's series in hand first, since
+        # it pools across a subject's sessions.)
+        session_artifacts = {}
         for sess_key, sess in sess_dict.items():
             if f"{subj}/{sess_key}" in subjects_exclude:
                 continue
@@ -658,11 +755,21 @@ def run_glm_scoring(sessions_cache, config):
             native_sfreq = float(sess["sfreq"])
             trials_meta  = sess["trials_meta"]
 
+            env_min = sess.get("env_min")
+            env_max = sess.get("env_max")
+
             qc_enabled = getattr(config, "QC_ENABLED", False)
             qc_spans = []
             if qc_enabled:
                 qc = airflow_qc.qc_session(signal_raw, native_sfreq, config)
                 signal_for_pipeline = qc["signal_clean"]
+                if env_min is not None and env_max is not None:
+                    env_min, env_max = np.array(env_min), np.array(env_max)
+                    for s0, s1 in qc["masked_spans"]:
+                        j0 = int(round(s0 * native_sfreq))
+                        j1 = int(round(s1 * native_sfreq))
+                        env_min[j0:j1] = signal_for_pipeline[j0:j1]
+                        env_max[j0:j1] = signal_for_pipeline[j0:j1]
                 qc_spans = list(qc["masked_spans"])
                 qc_info[subj][sess_key] = {
                     "breath_size": qc["breath_size"],
@@ -688,43 +795,42 @@ def run_glm_scoring(sessions_cache, config):
                 raw_z, sfreq, signal_for_pipeline, native_sfreq,
                 median_win_sec=config.GLM_MEDIAN_WIN_SEC,
                 refractory_sec=config.GLM_REFRACTORY_SEC,
+                env_min=env_min, env_max=env_max,
             )
 
-            # ── Artifact handling (config.GLM_ARTIFACT_METHOD) ───────────────
-            # hampel_drop_cycles : remove amplitude-spike cycles BEFORE the
-            #   Phase-3 series is interpolated, so the spike never reaches any
-            #   RA/RFR series or GLM fit (the cycle_gap gate then rejects any
-            #   trial left with too long a dead stretch).
-            # hampel_reject_trials : keep the cycles, but remember the flagged
-            #   onset times so any trial whose window contains one is rejected
-            #   below (reason "amplitude_artifact").
-            # manual_exclude : no cycle-level action beyond the SUBJECTS_EXCLUDE
-            #   skip above (which now applies to every method, not just this
-            #   one) -- leaves surviving sessions' cycles/results unchanged.
-            flagged_onset_times = []
+            cycle_peak_times, _ = _nk2_peak_trough_times(raw_z, sfreq, config)
+            attach_cycle_features(cycles, signal_for_pipeline, native_sfreq, cycle_peak_times)
+
             missing_spans = list(qc_spans)
 
-            max_ratio = getattr(config, "QC_MAX_BREATH_RATIO", None)
-            if max_ratio is not None:
-                deep = airflow_qc.flag_deep_breaths(cycles, max_ratio)
-                missing_spans += [(c["onset_time"], c["assign_time"])
-                                  for c, bad in zip(cycles, deep) if bad]
-                cycles = [c for c, bad in zip(cycles, deep) if not bad]
-                if subj in qc_info and sess_key in qc_info[subj]:
-                    qc_info[subj][sess_key]["deep_breaths"] = int(deep.sum())
-            if artifact_method in ("hampel_drop_cycles", "hampel_reject_trials"):
-                flags = _hampel_flag_cycles(cycles, artifact_k)
-                if artifact_method == "hampel_drop_cycles":
-                    # extend, not replace: qc_spans are already in missing_spans
-                    # Dropped cycle's own [onset, assign) span is where its RA/RP/RFR
-                    # were measured -- that's what's untrustworthy, not the
-                    # surrounding real breaths used to bridge the interpolation.
-                    missing_spans += [(c["onset_time"], c["assign_time"])
-                                      for c, bad in zip(cycles, flags) if bad]
-                    cycles = [c for c, bad in zip(cycles, flags) if not bad]
-                else:  # hampel_reject_trials
-                    flagged_onset_times = [c["onset_time"]
-                                           for c, bad in zip(cycles, flags) if bad]
+            manual_spans = [(float(a), float(b)) for a, b in
+                            getattr(config, "MANUAL_BAD_SPANS", {}).get(f"{subj}/{sess_key}", [])]
+            if manual_spans:
+                missing_spans += manual_spans
+                cycles = [c for c in cycles
+                          if not any(c["onset_time"] < b and c["assign_time"] > a
+                                     for a, b in manual_spans)]
+
+            cycle_rejected = np.zeros(len(cycles), dtype=bool)
+            cycle_reason = [None] * len(cycles)
+            cycle_report = None
+            if getattr(config, "CYCLE_REJECTION_ENABLED", False):
+                cycle_rejected, cycle_reason, cycle_report = airflow_qc.classify_cycles(
+                    cycles, config)
+                cycle_rejected, cycle_reason = airflow_qc.apply_neighbour_rules(
+                    cycle_rejected, cycle_reason, config)
+                cycle_report = airflow_qc._cycle_report(
+                    cycles, cycle_rejected, cycle_reason,
+                    cycle_report["abstained"], cycle_report["n_ref_cycles"],
+                    cycle_report["median_RA"], cycle_report["cut_RA"])
+                qc_info.setdefault(subj, {}).setdefault(sess_key, {})["cycles"] = cycle_report
+
+            admission = {}
+            if getattr(config, "CYCLE_REJECTION_ENABLED", False):
+                admission = admit_trials(trials_meta, cycles, cycle_rejected, config)
+                if estimation == "pooled_session":
+                    missing_spans += [a["span"] for a in admission.values()
+                                      if not a["admitted"]]
 
             # Session crop: GLM_PRE_FIXATION_SEC before the first trial's own
             # fixation onset (d105_time) through GLM_POST_CODE_SEC after the
@@ -744,12 +850,8 @@ def run_glm_scoring(sessions_cache, config):
                 cycles, n_samples, sfreq,
                 hp=config.GLM_FINAL_HP, lp=config.GLM_FINAL_LP,
                 missing_spans=missing_spans,
+                rejected=cycle_rejected if getattr(config, "CYCLE_REJECTION_ENABLED", False) else None,
             )
-
-            # NK2 cross-check for no_cycles_found -- same detector/config the
-            # BxB path already applies identically to every subject (see
-            # config for why this replaced session-median ratio thresholds).
-            nk2_peak_times, nk2_trough_times = _nk2_peak_trough_times(raw_z, sfreq, config)
 
             d110_secs = np.array([m["d110_time"] for m in trials_meta
                                    if m["d110_time"] is not None])
@@ -761,6 +863,37 @@ def run_glm_scoring(sessions_cache, config):
                 "scored_start_sec": win_start,
                 "scored_end_sec": win_end,
             }
+
+            session_artifacts[sess_key] = dict(
+                trials_meta=trials_meta, raw_z=raw_z, sfreq=sfreq, cycles=cycles,
+                series=series, times_full=times_full, n_samples=n_samples,
+                cycle_rejected=cycle_rejected, cycle_reason=cycle_reason,
+                cycle_report=cycle_report, admission=admission,
+            )
+
+        # ── Subject-level z-scoring of RA/RFR (Bach et al. 2016: removes
+        # between-subject rib-cage/lung-volume anatomy variance). Pooled
+        # across this subject's sessions -- never per-session, which would
+        # normalize away the Eve-vs-Mor contrast itself. RP is left alone
+        # (config.GLM_ZSCORE_METRIC default): it's already an absolute
+        # physical unit (seconds), not a device-calibration-dependent one.
+        zscored = zscore_subject_series(
+            {sk: art["series"] for sk, art in session_artifacts.items()}, config)
+        for sk in session_artifacts:
+            session_artifacts[sk]["series"] = zscored[sk]
+
+        # ── Pass B: build trials + run the GLM fit on the (possibly
+        # z-scored) series ──
+        for sess_key, art in session_artifacts.items():
+            trials_meta          = art["trials_meta"]
+            raw_z                = art["raw_z"]
+            sfreq                = art["sfreq"]
+            cycles               = art["cycles"]
+            series               = art["series"]
+            times_full           = art["times_full"]
+            n_samples            = art["n_samples"]
+            cycle_rejected       = art["cycle_rejected"]
+            admission            = art["admission"]
 
             trials = []
             for meta in trials_meta:
@@ -778,40 +911,17 @@ def run_glm_scoring(sessions_cache, config):
                 if i1 <= i0:
                     continue
 
-                # rate_artifact must use the RAW per-cycle period, not the
-                # Phase-3 causally-filtered RP series: that filter's 0.001 Hz
-                # high-pass removes the DC level (typical breath period), so
-                # the filtered series oscillates around ZERO -- 60/near-zero
-                # blows up to bogus "rates" in the thousands of bpm. The
-                # filtered series is correct as GLM input (Phase 4), but the
-                # rejection gate needs actual physiological plausibility.
                 cycles_in_window = [c for c in cycles if b0 <= c["onset_time"] < r1]
-                rate_max_in_window = (
-                    max(60.0 / c["RP"] for c in cycles_in_window if c["RP"] > 0)
-                    if cycles_in_window else np.nan
-                )
 
-                # cycle_gap input: longest dead stretch BETWEEN detected onsets.
-                # Window-edge segments (window-start -> first onset, last onset ->
-                # window-end) are deliberately excluded: a window boundary landing
-                # mid-breath is not an apnea, and including those edges fabricated
-                # >12 s "gaps" in normally-breathing trials (rmax ~16 bpm) that the
-                # manual flags mark as good (extras/trials_flagged). Trials with <2
-                # detected onsets get NaN here and fall to no_cycles_found/flat_*.
-                onset_times = [c["onset_time"] for c in cycles_in_window]
-                max_gap_sec = (float(np.max(np.diff(onset_times)))
-                               if len(onset_times) >= 2 else np.nan)
-
-                # NK2 cross-check: real pre-onset peak (baseline) AND real
-                # post-onset trough-then-peak (response) -- same has_cycles
-                # structure the BxB path requires. Independent of the custom
-                # detector's own cycle count above.
-                nk2_has_cycles = (
-                    np.any((nk2_peak_times >= b0) & (nk2_peak_times <= onset_time))
-                    and np.any((nk2_trough_times > onset_time) & (nk2_trough_times < r1))
-                )
+                adm = admission.get(meta["trial_index"], {
+                    "admitted": True, "admit_reason": None,
+                    "valid_frac": np.nan, "n_cycles_win": 0})
 
                 trials.append({
+                    "admitted":         bool(adm["admitted"]),
+                    "admit_reason":     adm["admit_reason"],
+                    "valid_frac":       adm["valid_frac"],
+                    "n_cycles_win":     adm["n_cycles_win"],
                     "trial_index":      meta["trial_index"],
                     "code_value":       meta["code_value"],
                     "has_sound":        meta["has_sound"],
@@ -828,17 +938,7 @@ def run_glm_scoring(sessions_cache, config):
                     "onset_time":       onset_time,
                     "times_wide":       (times_full[i0:i1] - onset_time).astype(np.float32),
                     "n_cycles_in_window": len(cycles_in_window),
-                    "max_gap_sec":      max_gap_sec,
-                    "nk2_has_cycles":   bool(nk2_has_cycles),
-                    # True only under GLM_ARTIFACT_METHOD="hampel_reject_trials"
-                    # when a Hampel-flagged amplitude spike falls in this window
-                    # (empty list -> always False for the other two methods).
-                    "amp_artifact":     bool(any(b0 <= ot < r1 for ot in flagged_onset_times)),
-                    "baseline_std":     None,
                     "baseline_mean":    None,
-                    "response_std":     None,
-                    "rate_max_in_window": rate_max_in_window,
-                    "shape_msd":        None,
                     "score_rp":         None,
                     "score_ra":         None,
                     "score_rfr":        None,
@@ -857,16 +957,16 @@ def run_glm_scoring(sessions_cache, config):
 
 
 def _run_glm_analysis(trials, raw_z, series, sfreq, config):
-    """PASS 1: labels, per-trial baseline stats, session-level stats, shape
-    centroid. PASS 2: rejection gates, then (per_trial estimation only) the
-    per-trial GLM fit. Modifies trials[] in-place."""
+    """PASS 1: labels, GLM condition, baseline mean for plotting. PASS 2: read
+    the per-breath verdict from admit_trials, then (per_trial estimation only)
+    the per-trial GLM fit. Modifies trials[] in-place."""
     if not trials:
         return
 
     estimation = getattr(config, "GLM_ESTIMATION", "per_trial")
 
-    # ══ PASS 1  Labels · per-trial std · session-level stats ══════════════════
-    bl_stds = []
+    # ══ PASS 1  Labels · GLM condition · baseline mean ════════════════════════
+    condition_field = getattr(config, "GLM_CONDITION_FIELD", "label")
     for t in trials:
         if config.USE_SUBJECTIVE_TRIAL_TYPE:
             t["label"] = t["subjective_label"]
@@ -879,8 +979,10 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
             else:
                 t["label"] = t["subjective_label"]
 
-        if getattr(config, "GLM_CONDITION_FIELD", "label") == "has_sound":
+        if condition_field == "has_sound":
             t["condition"] = 1 if t["has_sound"] else 2   # 1=Sound, 2=No-sound
+        elif condition_field == "none":
+            t["condition"] = 1
         else:
             t["condition"] = t["label"]                     # 1=Negative, 2=Neutral
 
@@ -889,148 +991,24 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
         window_raw = raw_z[i0:i1]
         pre_mask, post_mask = tw < 0, tw >= 0
 
-        b_std = float(np.std(window_raw[pre_mask]))  if np.any(pre_mask)  else np.nan
-        r_std = float(np.std(window_raw[post_mask])) if np.any(post_mask) else np.nan
-        t["baseline_std"] = b_std
-        t["response_std"] = r_std
         # Mean (not std) of the baseline window -- for baseline-corrected
         # timecourse plots only (t["epoch_anal"] - t["baseline_mean"]), same
         # convention as the BxB path. Not used by any rejection gate or score.
         t["baseline_mean"] = (float(np.mean(window_raw[pre_mask]))
                                if np.any(pre_mask) else np.nan)
-        bl_stds.append(b_std)
-        # t["rate_max_in_window"] was already computed in run_glm_scoring from
-        # raw cycle periods (not the Phase-3 filtered series -- see there).
 
-    sess_std_median = float(np.nanmedian(bl_stds)) if bl_stds else np.nan
-    if getattr(config, "QC_ROBUST_GATES", False):
-        _v = np.asarray(bl_stds, dtype=float)
-        _v = _v[np.isfinite(_v)]
-        sess_std_std = (airflow_qc.robust_sd(_v) if _v.size else np.nan)
-    else:
-        sess_std_std = float(np.nanstd(bl_stds)) if bl_stds else np.nan
-
-    # ══ SHAPE-CENTROID OUTLIER DETECTION (reused verbatim on raw_z windows) ═══
-    shape_enable    = getattr(config, "AIRFLOW_SHAPE_REJECTION_ENABLE", True)
-    shape_threshold = getattr(config, "AIRFLOW_SHAPE_SD_THRESHOLD", 3.0)
-    shape_win_min   = getattr(config, "AIRFLOW_SHAPE_WINDOW_MIN", -5.0)
-    shape_win_max   = getattr(config, "AIRFLOW_SHAPE_WINDOW_MAX", 10.0)
-
-    shape_msd    = [np.nan] * len(trials)
-    shape_cutoff = np.nan
-
-    if shape_enable and len(trials) > 1:
-        expected_n_cols = int(round((shape_win_max - shape_win_min) * sfreq))
-        shape_rows, shape_row_idxs = [], []
-        for i, t in enumerate(trials):
-            i0, i1 = t["win_start_idx"], t["win_end_idx"]
-            mask = (t["times_wide"] >= shape_win_min) & (t["times_wide"] < shape_win_max)
-            if expected_n_cols > 0 and int(np.sum(mask)) == expected_n_cols:
-                shape_rows.append(raw_z[i0:i1][mask].astype(np.float64))
-                shape_row_idxs.append(i)
-
-        if len(shape_rows) > 1:
-            M = np.vstack(shape_rows)
-            row_means = M.mean(axis=1, keepdims=True)
-            row_stds  = M.std(axis=1, keepdims=True)
-            row_stds[row_stds == 0] = 1.0
-            Mz = (M - row_means) / row_stds
-            centroid = Mz.mean(axis=0)
-            msd = np.mean((Mz - centroid) ** 2, axis=1)
-            if getattr(config, "QC_ROBUST_GATES", False):
-                shape_cutoff = airflow_qc.robust_cutoff(msd, shape_threshold)
-            else:
-                shape_cutoff = float(np.nanmean(msd)) + shape_threshold * float(np.nanstd(msd))
-            for row_i, trial_i in enumerate(shape_row_idxs):
-                shape_msd[trial_i] = float(msd[row_i])
-
-    # ══ PASS 2  Rejection gates · GLM scoring ══════════════════════════════════
-    for t, msd in zip(trials, shape_msd):
+    # ══ PASS 2  Read the per-breath verdict · GLM scoring ═════════════════════
+    # There is exactly ONE decision point and it is at the breath, in
+    # airflow_qc.classify_cycles. admit_trials turns those verdicts into
+    # t["admitted"]; nothing here re-derives validity from window statistics.
+    for t in trials:
         i0, i1 = t["win_start_idx"], t["win_end_idx"]
         tw = t["times_wide"]
-        bs, rs = t["baseline_std"], t["response_std"]
 
-        # Reject if EITHER detector finds too few cycles here: the custom
-        # zero-crossing detector found fewer than GLM_MIN_CYCLES_IN_WINDOW (a
-        # 13-20 s window with <2 onsets can't yield even one respiration period
-        # -- these are the ncyc<=1 trials the manual flags mark bad, previously
-        # caught only incidentally by the cycle_gap edge artifact), OR NK2's
-        # validated khodadad2018 detector disagrees that a real breath exists
-        # (catches flat traces / step artifacts the custom detector's lack of
-        # an amplitude floor would otherwise accept -- see config).
-        min_cycles = getattr(config, "GLM_MIN_CYCLES_IN_WINDOW", 2)
-        no_cycles_reject = t["n_cycles_in_window"] < min_cycles or not t["nk2_has_cycles"]
+        reason = None if t.get("admitted") else (t.get("admit_reason") or "not_admitted")
 
-        z_threshold = getattr(config, "GLM_Z_SCORE_THRESHOLD", None)
-        z_reject = (bool((bs - sess_std_median) / sess_std_std > z_threshold)
-                    if z_threshold is not None and not np.isnan(bs) and sess_std_std > 0
-                    else False)
-
-        min_ratio = getattr(config, "GLM_MIN_STD_RATIO", None)
-        flat_reject = (bool(bs < min_ratio * sess_std_median)
-                       if min_ratio is not None and not np.isnan(bs)
-                          and not np.isnan(sess_std_median)
-                       else False)
-
-        post_ratio = getattr(config, "GLM_POST_MIN_STD_RATIO", None)
-        post_flat_reject = (bool(rs < post_ratio * sess_std_median)
-                            if post_ratio is not None and not np.isnan(rs)
-                               and not np.isnan(sess_std_median)
-                            else False)
-
-        rate_thresh = getattr(config, "GLM_RATE_ARTIFACT_THRESHOLD", None)
-        rate_max = t["rate_max_in_window"]
-        rate_reject = (bool(rate_max > rate_thresh)
-                       if rate_thresh is not None and rate_max is not None
-                          and np.isfinite(rate_max)
-                       else False)
-
-        shape_reject = (shape_enable and not np.isnan(msd) and not np.isnan(shape_cutoff)
-                         and bool(msd > shape_cutoff))
-
-        # cycle_gap: absolute minimum-rate floor (see config) -- a real cycle
-        # at each edge of the window doesn't rule out a long dead stretch
-        # between them, which neither no_cycles_found nor the std-based gates
-        # catch (flat_signal/flat_response look at std over the WHOLE span).
-        min_rate = getattr(config, "GLM_MIN_RATE_THRESHOLD", None)
-        max_gap = t["max_gap_sec"]
-        gap_reject = (bool(60.0 / max_gap < min_rate)
-                      if min_rate is not None and max_gap is not None
-                         and np.isfinite(max_gap) and max_gap > 0
-                      else False)
-
-        # amplitude_artifact: only ever True under the hampel_reject_trials
-        # method (a Hampel-flagged amplitude spike in this trial's window); the
-        # flag is precomputed in run_glm_scoring (see config.GLM_ARTIFACT_METHOD).
-        amp_reject = bool(t.get("amp_artifact", False))
-
-        min_knots = getattr(config, "QC_MIN_KNOTS", None)
-        knot_reject = (bool(t["n_cycles_in_window"] < min_knots)
-                       if min_knots is not None else False)
-
-        min_valid = getattr(config, "QC_MIN_VALID_FRACTION", None)
-        cov_reject = False
-        if min_valid is not None:
-            _y = series[config.GLM_PRIMARY_METRIC][i0:i1] \
-                 if config.GLM_PRIMARY_METRIC in series else None
-            if _y is not None and len(_y):
-                cov_reject = bool(np.mean(np.isfinite(_y)) < min_valid)
-
-        reasons = []
-        if no_cycles_reject: reasons.append("no_cycles_found")
-        if z_reject:         reasons.append("noisy_baseline")
-        if flat_reject:      reasons.append("flat_signal")
-        if rate_reject:      reasons.append("rate_artifact")
-        if post_flat_reject: reasons.append("flat_response")
-        if shape_reject:     reasons.append("atypical_shape")
-        if gap_reject:       reasons.append("cycle_gap")
-        if amp_reject:       reasons.append("amplitude_artifact")
-        if knot_reject:      reasons.append("low_information")
-        if cov_reject:       reasons.append("low_coverage")
-
-        t["rejected"]         = bool(reasons)
-        t["rejection_reason"] = ", ".join(reasons) if reasons else ""
-        t["shape_msd"]        = msd
+        t["rejected"]         = reason is not None
+        t["rejection_reason"] = reason or ""
 
         t["epoch_anal"] = raw_z[i0:i1]
         t["times_anal"] = tw
@@ -1052,16 +1030,10 @@ def _run_glm_analysis(trials, raw_z, series, sfreq, config):
         # depends on ALL accepted trials at once, not just this one.
 
     if estimation == "pooled_session":
+        # NO re-blanking here. A rejected trial's samples were already NaN'd in
+        # run_glm_scoring Pass A, over the trial's OWN response_range_sec
+        # ([code_n, code_n+1)), before build_continuous_series ran -- which is the
+        # only span admission counted breaths over (spec §5). Blanking again here
+        # over win_start_idx:win_end_idx would widen it to baseline-start ->
+        # response-end, swallowing the PREVIOUS trial's response epoch.
         fit_pooled_session_glm(trials, series, sfreq, config)
-
-    # ── score_ceiling gate (applies to BOTH estimation paths) ─────────────────
-    # GLM_SCORE_MAX is None by default (disabled); when set, reject a trial whose
-    # |score_ra| exceeds it, regardless of how the beta was estimated.
-    score_max = getattr(config, "GLM_SCORE_MAX", None)
-    if score_max is not None:
-        for t in trials:
-            if (not t["rejected"] and t["score_ra"] is not None
-                    and np.isfinite(t["score_ra"]) and abs(t["score_ra"]) > score_max):
-                t["rejected"]         = True
-                t["score_rp"] = t["score_ra"] = t["score_rfr"] = np.nan
-                t["rejection_reason"] = "score_ceiling"

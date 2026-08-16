@@ -5,7 +5,10 @@ SUBJECT_FILTER = []
 
 # Unresolved placeholder, not an established rejection rule -- chosen by eyeballing
 # one outlier scan and applied inconsistently across similarly-contaminated sessions.
-SUBJECTS_EXCLUDE = ["DA01", "ES29/eve", "MG14/mor", "MS13/eve", "NB03", "YL26"]
+SUBJECTS_EXCLUDE = ["DA01", "ES29/eve", "EV15/eve", "LG07/mor", "MG14/mor", "MS13/eve",
+                    "NB03", "YL26"]
+
+MANUAL_BAD_SPANS = {"EV15/mor": [(253.001, 621.416)]}
 
 AIRFLOW_CHANNEL = "Airflow"
 
@@ -16,7 +19,6 @@ SESSION_MAP = {
 
 CACHE_SFREQ = 25.0
 
-AIRFLOW_HIGHPASS = 0.01
 AIRFLOW_LOWPASS  = 70.0
 
 RSP_CLEAN_METHOD         = "khodadad2018"
@@ -31,7 +33,6 @@ USE_SUBJECTIVE_TRIAL_TYPE = True
 
 
 AIRFLOW_Z_SCORE_THRESHOLD = 3.0
-AIRFLOW_AMPLITUDE_Z_THRESHOLD = None
 AIRFLOW_MIN_STD_RATIO = 0.1
 RSP_RATE_ARTIFACT_THRESHOLD = 40
 AIRFLOW_SCORE_MAX = 3.0
@@ -43,7 +44,7 @@ AIRFLOW_SHAPE_WINDOW_MIN       = -5.0
 AIRFLOW_SHAPE_WINDOW_MAX       = 10.0
 
 
-GLM_DESPIKE_ENABLED     = True
+GLM_DESPIKE_ENABLED     = False
 GLM_DESPIKE_K           = 50.0
 GLM_DESPIKE_MAX_RUN_SEC = 1.0
 
@@ -64,35 +65,28 @@ GLM_RF_PARAMS = {
 }
 GLM_USE_DERIVATIVE = {"RP": False, "RA": True, "RFR": True}
 
-GLM_Z_SCORE_THRESHOLD       = 3.0
-GLM_MIN_STD_RATIO           = 0.1
-GLM_POST_MIN_STD_RATIO      = 0.1
-GLM_RATE_ARTIFACT_THRESHOLD = 40
-
-GLM_MIN_RATE_THRESHOLD = 5
-GLM_MIN_CYCLES_IN_WINDOW = 2
-
-GLM_SCORE_MAX = None
-
-
-GLM_ARTIFACT_METHOD = "manual_exclude"   # "manual_exclude" | "hampel_drop_cycles" | "hampel_reject_trials"
-GLM_ARTIFACT_K      = 3.5
-
 GLM_PRE_FIXATION_SEC = 15.0
 GLM_POST_CODE_SEC    = 15.0
 
 
-QC_ENABLED            = True
+QC_ENABLED            = False
 QC_BREATH_BAND        = (0.01, 0.6)
-QC_EXCURSION_K        = 5.0
-QC_EXCURSION_WIN_SEC  = 1.0
-QC_MERGE_GAP_SEC      = 0.2
-QC_MAX_RUN_SEC        = 1.0
-QC_FLAT_SESSION_RATIO = 0.10
-QC_ROBUST_GATES       = True
-QC_MIN_KNOTS          = 5
-QC_MIN_VALID_FRACTION = 0.5
-QC_MAX_BREATH_RATIO   = 5.0
+
+CYCLE_REJECTION_ENABLED = True
+
+CYCLE_LOGRA_SCALE = 0.2378
+CYCLE_LOGRA_K     = 6.0
+
+CYCLE_RP_MAX = 7.0
+
+CYCLE_LOSTLOCK_MIN_PEAKS = 3
+
+CYCLE_MIN_REF_CYCLES = 30
+
+CYCLE_RECOVERY_RULE = True
+CYCLE_GAPFILL_RULE  = True
+
+TRIAL_MIN_VALID_FRAC = 0.60
 
 
 GLM_PRIMARY_METRIC = "RA"   # "RA" | "RFR" | "RP" | "composite"
@@ -100,7 +94,7 @@ GLM_PRIMARY_METRIC = "RA"   # "RA" | "RFR" | "RP" | "composite"
 
 GLM_ESTIMATION = "pooled_session"   # "per_trial" | "pooled_session"
 
-GLM_CONDITION_FIELD = "label"   # "label" (Negative/Neutral) | "has_sound" (Sound/No-sound)
+GLM_CONDITION_FIELD = "none"   # "none" (one beta/session) | "label" (Negative/Neutral) | "has_sound" (Sound/No-sound)
 
 SUBJECTS_XLSX = r"/Volumes/My Passport/startle_raw/subjects.xlsx"
 
@@ -116,3 +110,5 @@ EVE_COLOR  = "#E67E22"
 MOR_COLOR  = "#8E44AD"
 UP_COLOR   = "#27AE60"
 DOWN_COLOR = "#E74C3C"
+
+GLM_ZSCORE_METRIC = {"RP": False, "RA": True, "RFR": True}
