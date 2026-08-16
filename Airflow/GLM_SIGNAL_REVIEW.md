@@ -13,6 +13,21 @@ respiration responses*), implemented against the PsPM v7.0.0 MATLAB source
 
 Cohort figures quoted here: 45 sessions, 24 subjects, 25 Hz.
 
+> **⚠ Stale on rejection (checked 2026-08-12).** Stages **1b**, **4b** and **6**
+> describe an excursion-gate / deep-breath-gate / per-SAMPLE scheme that is not
+> the code on disk. What runs is a per-TRIAL gate set (`Airflow/_scratch/STATUS.md`
+> §A); the cycle-based replacement is designed but unimplemented
+> (`Airflow/_scratch/cycle_rejection_spec.md`). Stages 1a, 2, 3, 4, 5 and 7 —
+> the filter, cycle detection, per-breath measurement, series construction and
+> GLM — are current and were verified line-for-line against PsPM.
+>
+> Two known live defects, both reproducible from the cache: `flag_excursions`
+> at k=5 flags **0 runs** in all of RP06/mor despite a 14.93 × `A` peak at
+> t=1340.40 s (its 1 s rolling-median reference rises with the artifact); and a
+> bad breath inside an admitted trial reaches `y` at full weight — MS18/eve
+> cycles 18/19/110/111 are 3.28 % of samples and carry **61.1 %** of that
+> session's Σy².
+
 ---
 
 ## Stage 1 — Signal integrity (QC)
@@ -62,8 +77,10 @@ breath's excursion.
   `mask` records what was bridged; Stage 5 blanks it back to NaN
   (`pspm_prepdata.m` L74-85 + L143-145: interpolate → filter → restore NaN).
 
-**Balance check:** Evening 8.87% of trials touched, Morning 8.67% — masking is
-not condition-correlated.
+**Balance report:** Evening 8.87% of trials touched, Morning 8.67% — masking is
+not condition-correlated. This is a *detector*, run after the fact: it exists to
+expose a gate keying on something that co-varies with condition. It never passes
+or fails a gate, and it is never a reason to move a threshold.
 
 ---
 
@@ -162,19 +179,37 @@ analysis downstream is the subject, not the sample.
 
 ---
 
-## Stage 6 — Trial rejection gates
+## Stage 6 — Rejection: per-SAMPLE, not per-trial
 
-All gates a-priori and symmetric across conditions/sessions.
+All rules a-priori and symmetric across conditions/sessions. **There is no
+per-trial gate on the GLM path.** Validity is a property of the continuous
+session signal; invalid samples become NaN in `series` and drop out of the fit.
 
-| Gate | Rule | Basis |
+Array A (`compute_sample_validity`), decided from local signal properties only,
+no trial context:
+
+| Component | Rule | Basis |
 |---|---|---|
-| `no_cycles_found` | < 2 onsets in window, **or** NeuroKit2 (khodadad2018) finds no real breath | 2 onsets = arithmetic minimum for one period |
-| `low_information` | < 5 breaths in window | fit has 3 parameters; 5 knots leaves ≥2 residual df |
-| `low_coverage` | < 50% of window samples finite | a trial fitted on a fraction of its window must not carry equal weight |
-| `flat_signal` / `flat_response` | baseline/response SD < 0.1 × session median | AASM apnea criterion (≥90% reduction) |
-| `noisy_baseline` / `atypical_shape` | > median + 3·MAD·1.4826 | Hampel identifier, k=3 |
-| `rate_artifact` | any cycle > 40 bpm | see note below |
-| `cycle_gap` | longest inter-onset gap implies < 5 bpm | PsPM flags period > 10s (L207) |
+| cycle coverage | sample outside any detected cycle | nothing measured there |
+| amplitude spike | RA > median + 3.5·MAD·1.4826 (upper bound only) | Hampel identifier, `GLM_ARTIFACT_K` |
+| rate plausibility | `60/RP` outside 5–40 bpm | see note below |
+| flat / noisy | rolling local SD of `raw_z` (window = session median RP) below 0.1× or above 3 MADs of its robust reference | AASM apnea criterion (≥90% reduction) for the flat side |
+
+Then Stage 4.6's `GLM_MAX_ABS_Z` ceiling (default 3.0) NaNs any sample with
+`|RA(z)|`/`|RFR(z)|` above it.
+
+A trial is marked `rejected` only when it has **zero** valid samples
+(`no_valid_signal`) — bookkeeping, not a gate, so a trial with no data isn't
+handed a pooled β it contributed nothing to. `valid_fraction` is reported but
+never thresholded. Current: Eve 721/730 kept (98.8%), Mor 743/771 (96.4%).
+
+The old per-trial gates (`no_cycles_found`, `low_information`, `low_coverage`,
+`flat_signal`/`flat_response`, `noisy_baseline`, `atypical_shape`,
+`rate_artifact`, `cycle_gap`) were removed: they were computed over
+`[baseline_start, response_end)`, which bleeds into the next trial's fixation
+period (true min trial→trial gap 12.49 s vs. a ~30 s response window), and
+imposed a baseline-vs-response split with no meaning on one continuous signal
+deconvolved as a single GLM.
 
 **`rate_artifact = 40 bpm` is not literature-sourced.** PsPM's own bound is
 period < 1s = 60 bpm, but the 1s refractory makes >60 bpm structurally
@@ -182,15 +217,16 @@ unreachable (0 of 20,381 cycles) — a 60 bpm gate would be a no-op. 40 bpm
 ("twice the upper limit of normal resting adult rate, 10–18/min") flags 0.28%
 of cycles; 25 bpm would flag 4.5%.
 
-**The RA Hampel gate was replaced by the ratio gate in Stage 4b.** The old
-rule (`median(RA) + 3.5·MAD·1.4826`) dropped 5.60% of cycles cohort-wide, and
-the shallowest discarded breath was only 1.64× median depth — normal
-breathing, not artifact. Because depth is the quantity RA measures, that gate
-biased the score downward. Root cause: MAD-k is not comparable across
-sessions since MAD/median varies (k=3.5 → 1.64× min discarded, k=6 → 2.11×,
-k=10 → 2.95×, k=15 → 4.20×). The Stage 4b ratio bound is stable by
-construction and drops only 0.80% while still catching the 11.3× artifact
-above.
+**Both the ratio gate and the RA Hampel gate are live — this doc previously
+claimed the ratio gate had replaced Hampel, which is not what the code does.**
+`flag_deep_breaths` (`QC_MAX_BREATH_RATIO`=5.0) drops cycles before Array A,
+and Array A then applies `_hampel_flag_cycles` (`GLM_ARTIFACT_K`=3.5) on the
+survivors. The standing critique of the Hampel rule still applies and is
+unresolved: MAD-k is not comparable across sessions since MAD/median varies
+(k=3.5 → 1.64× min discarded depth, k=6 → 2.11×, k=10 → 2.95×, k=15 → 4.20×),
+and because depth is the quantity RA measures, discarding shallow-but-normal
+breaths biases the score downward. The ratio bound is stable by construction.
+Whether Hampel should be dropped in favour of the ratio gate alone is open.
 
 ---
 

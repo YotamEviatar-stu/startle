@@ -147,12 +147,12 @@ identifier: `RA > median(RA) + GLM_ARTIFACT_K × MAD(RA) × 1.4826`
 (`GLM_ARTIFACT_K`=3.5), upper bound only, needs ≥3 cycles):
 
 - `"manual_exclude"` **(current default)** — no cycle-level action beyond
-  `SUBJECTS_EXCLUDE` (see Rejection Gates); cycles pass through unchanged.
+  `SUBJECTS_EXCLUDE` (see Rejection); cycles pass through unchanged.
 - `"hampel_drop_cycles"` — flagged cycles are removed before Stage 4
   interpolation and their span added to `missing_spans`.
 - `"hampel_reject_trials"` — cycles are kept, but any trial whose window
   contains a flagged cycle's onset is rejected downstream (`amplitude_artifact`,
-  see Rejection Gates).
+  see Rejection).
 
 `SUBJECTS_EXCLUDE` is always honoured regardless of this setting (whole
 subject `"SUBJ"` or single session `"SUBJ/sess"` keys) — it parks hand-flagged,
@@ -172,6 +172,64 @@ can't catch (a uniformly-corrupted session has a huge median too).
   every sample downstream via the causal filter's own feedback; the
   interpolated line is needed only to keep that recursion well-behaved. GLM
   fitting already masks NaNs out of its regression.
+
+### Stage 4.5 — Per-subject z-scoring (`zscore_subject_series`)
+
+Removes between-subject anatomy/calibration variance from RA and RFR before
+fitting. `signal_raw` is in each recording's own native units — this
+project's airflow channel comes through as raw EGI/MNE Volts (session
+peak-to-trough range ~0.015 in one checked example), never rescaled — so
+absolute RA/RFR magnitude differs by rib-cage-to-lung-volume mapping and
+sensor contact, not just reactivity (Bach et al. 2016, §3.4/Discussion:
+*"RA and RFR measures contain between-subject variance of no interest, due
+to individual anatomy"*).
+
+- Controlled by `GLM_ZSCORE_METRIC` = `{RP: False, RA: True, RFR: True}`. RP
+  is left raw — it's already an absolute physical unit (seconds), not a
+  device-calibration-dependent one.
+- For each subject, pools every finite sample of `series['RA']` (and
+  `series['RFR']`) across **all of that subject's sessions** (Eve + Mor
+  together), computes one `(mean, std)` pair per subject, then applies
+  `z = (x - mean) / std` to each session's series individually. Pooling
+  across sessions — never per-session — is required: z-scoring each session
+  on its own would force every session to mean 0, erasing the Eve-vs-Mor
+  contrast the pipeline exists to measure.
+- Runs after Stage 4 (continuous series) and before Stage 5 (GLM fit): the
+  fit sees z-scored RA/RFR input, so `score_ra`/`score_rfr` come out in
+  z-units (dimensionless, comparable across subjects) instead of native
+  Volts. `score_rp` stays in seconds throughout.
+- Pure function — takes `{session_key: series_dict}` for one subject,
+  returns a new dict, never mutates its input. The QC notebook
+  (`airflow_qc_show.ipynb`) memoizes the *raw* (pre-z-score) series per
+  session; every cell that refits the GLM calls this helper fresh each time
+  (`get_subject_zscored_series`) rather than caching a z-scored copy, so
+  repeated calls can't double-apply the transform.
+
+### Stage 4.6 — Amplitude ceiling (`apply_amplitude_ceiling`)
+
+`GLM_MAX_ABS_Z` (default `3.0`; `None` disables). Any sample whose `|RA(z)|`
+or `|RFR(z)|` exceeds the ceiling is set NaN across **all** metrics of that
+session's series, and cleared in Array A's `valid` mask so the trial's
+reported `valid_fraction` reflects it.
+
+Must run here, not inside Array A: Array A operates on `raw_z` and cycles,
+before the series exists and before Stage 4.5 pools Eve+Mor — RA(z) is not
+defined until after z-scoring.
+
+Reference distribution (all 20 subjects, finite RA(z) samples entering the
+GLM): 99th percentile is 3.27 (Eve) / 3.18 (Mor); 99.9th is 6.65 / 6.26. A
+ceiling of 3.0 therefore removes ~1.3% of Evening and ~1.2% of Morning
+samples — 0.050% vs 0.020% at a ceiling of 8, 1.289% vs 1.189% at 3.
+
+**This is a score-dependent gate and that is the problem with it.** It removes
+data on the basis of the very quantity being measured, so the surviving
+distribution is shaped by the threshold rather than by the physiology, and it
+truncates the top of the amplitude range in whichever session genuinely
+reaches higher (per-session max RA(z): Eve mean 6.99, Mor mean 5.61). Set from
+the cohort distribution a priori; never moved to change an outcome. Whether
+this stage should exist at all is an open question — a cycle-level verdict
+made before the series is built is the design the redesign replaces it with
+(`Airflow/_scratch/cycle_rejection_spec.md`).
 
 ### Stage 5 — GLM fit (`fit_trial_glm` / `fit_pooled_session_glm`)
 
@@ -201,27 +259,35 @@ architecture:
   with the same orthonormalized basis (fixed -10s..+30s support), the design
   columns causally high-passed per-metric and mean-centred, then
   re-orthogonalized per condition block before one session-wide solve. Each
-  accepted trial is written its condition's β_c as `score_<metric>` — one
+  trial is written its condition's β_c as `score_<metric>` — one
   number per condition per session, not per trial.
 
-Either way, only *accepted* trials (see Rejection Gates) contribute; rejected
-trials keep `score_rp`/`score_ra`/`score_rfr` = NaN. `GLM_PRIMARY_METRIC="RA"`
-is the single pre-registered confirmatory endpoint (see `CLAUDE.md` /
-`GLM_METHOD_FOUNDATIONS.md` §7); RP/RFR/composite are secondary/exploratory.
+Every trial with any valid signal contributes an event to the design. Bad data
+is removed at **sample** level (NaN in `series`), never by dropping a trial's
+onset column: dropping the column while its samples remain in `y` would leave a
+real response with no regressor to explain it, inflating the residual and
+biasing β. Only a trial with zero valid samples is skipped and keeps
+`score_rp`/`score_ra`/`score_rfr` = NaN. `GLM_PRIMARY_METRIC="RA"` names the
+metric the pipeline is validated against — the chain whose every stage has to
+hold up (see `GLM_METHOD_FOUNDATIONS.md` §7); RP/RFR/composite are carried but
+are not the reference.
 
 ### Stage 6 — Orchestration (`run_glm_scoring` / `_run_glm_analysis`)
 
+- Two passes per subject, required by Stage 4.5: **Pass A** builds every
+  session's cycles/series (Stages 0-4) without fitting anything; then Stage
+  4.5 z-scores RA/RFR pooled across those sessions; then **Pass B** builds
+  each session's trial list and runs the Stage 5 fit on the (now z-scored)
+  series. Z-scoring can't be folded into the original single-session pass —
+  it needs every session's series in hand first.
 - Session crop for the pooled design:
   `[min(d105_time)-GLM_PRE_FIXATION_SEC(15s), max(code_time)+GLM_POST_CODE_SEC(15s)]`;
   everything outside is masked missing before the pooled solve.
-- Per-trial diagnostics computed once per session (baseline/response std,
-  shape-centroid MSD, in-window cycle count/rate, longest inter-onset gap)
-  feed the rejection gates below, then either the per-trial fit runs inline or
-  the pooled fit runs once after all trials are classified.
-- `QC_ROBUST_GATES` (default `True`): the session-level spread used by
-  `noisy_baseline` and the `atypical_shape` cutoff is `median`/`MAD`-based
-  (`airflow_qc.robust_sd`/`robust_cutoff`) rather than `mean`/`std` — see
-  Rejection Gates footnote.
+- PASS 1 sets labels/condition and a display-only `baseline_mean`. PASS 2
+  records each trial's `valid_fraction` (Array A coverage within
+  `[onset, onset+QC_TRIAL_WINDOW_SEC)`, diagnostic only) and marks
+  `rejected` **solely** when that fraction is zero, then either the per-trial
+  fit runs inline or the pooled fit runs once afterwards.
 
 ---
 
@@ -257,40 +323,69 @@ methods, not just a documentation gap.
 
 ---
 
-## Rejection Gates
+## Rejection
 
-Both paths reject a trial if **any** reason fires; `rejection_reason` is a
-comma-joined list. Config names differ by path even where the underlying
-logic is identical.
+> **⚠ This section is stale (checked 2026-08-12).** It describes a per-SAMPLE
+> "Array A" scheme that is **not the code on disk**. What actually runs today is a
+> per-TRIAL gate set — eleven booleans OR-ed together in
+> `airflow_glm._run_glm_analysis` — plus `airflow_qc.flag_deep_breaths`,
+> `airflow_qc.flag_excursions` and `GLM_ARTIFACT_METHOD`. See
+> `Airflow/_scratch/STATUS.md` §A for what runs, and
+> `Airflow/_scratch/cycle_rejection_spec.md` for the cycle-based design that
+> replaces both. Read those two before trusting anything below.
+>
+> The principle that survives all three schemes: **one verdict per unit of signal,
+> from that unit's own measured properties, blind to the session key and the trial
+> label — consumed downstream, never re-derived.**
 
-| Reason | GLM config | BxB config | Logic |
-|---|---|---|---|
-| `no_cycles_found` | `GLM_MIN_CYCLES_IN_WINDOW`=2 (+ NK2 cross-check) | — (BxB's own gate) | GLM: fewer than 2 detected cycles in-window, OR NK2's independent `khodadad2018` detector disagrees a real breath exists. BxB: no complete baseline-peak + post-onset trough→peak pair found (`has_cycles=False`). |
-| `noisy_baseline` | `GLM_Z_SCORE_THRESHOLD`=3.0 | `AIRFLOW_Z_SCORE_THRESHOLD`=3.0 | Baseline-window std is a z-score outlier vs. the session's median/std of baseline stds. |
-| `flat_signal` | `GLM_MIN_STD_RATIO`=0.1 | `AIRFLOW_MIN_STD_RATIO`=0.1 | Baseline std < ratio × session median baseline std. |
-| `flat_response` | `GLM_POST_MIN_STD_RATIO`=0.1 | `AIRFLOW_POST_MIN_STD_RATIO`=0.1 | Response-window std < ratio × session median baseline std. |
-| `rate_artifact` | `GLM_RATE_ARTIFACT_THRESHOLD`=40 bpm | `RSP_RATE_ARTIFACT_THRESHOLD`=40 bpm | GLM: max `60/RP` over raw in-window cycles (not the filtered series, whose high-pass would blow this up). BxB: max NK2 `RSP_Rate` in-window. |
-| `atypical_shape` | `AIRFLOW_SHAPE_SD_THRESHOLD`=3.0, window `AIRFLOW_SHAPE_WINDOW_MIN/MAX`=(-5, 10)s | same (shared config) | Z-scored waveform's mean-squared distance from the session centroid exceeds `mean(MSD) + threshold·std(MSD)`. |
-| `score_ceiling` | `GLM_SCORE_MAX`=`None` (**disabled** by default) | `AIRFLOW_SCORE_MAX`=3.0 (**enabled**) | `|score| > max`, applied after scoring. Default differs between paths. |
+**The GLM path rejects SIGNAL, not trials.** Validity is a per-sample property
+of the continuous session signal; bad samples become NaN and drop out of the
+fit. There is no threshold that discards a whole trial. This replaced the old
+per-trial gate set (`no_cycles_found`, `noisy_baseline`, `flat_signal`,
+`flat_response`, `rate_artifact`, `atypical_shape`, `cycle_gap`,
+`low_information`, `low_coverage`) — those were computed over
+`[baseline_start, response_end)`, a window that bleeds into the next trial's
+fixation period (true min trial→trial gap 12.49 s vs. a ~30 s response
+window), and imposed a baseline-vs-response split that has no meaning on one
+continuous signal deconvolved as a single GLM. `noisy_baseline` and the
+baseline half of `flat_signal` are discarded as *concepts*, not just gates:
+there is no baseline window left to be noisy or flat about.
 
-GLM-only gates:
+**Array A** (`compute_sample_validity`) — `bool[n_samples]`, whole session,
+from local signal properties only, no trial context:
 
-| Reason | Config | Logic |
+| Component | Config | Logic |
 |---|---|---|
-| `cycle_gap` | `GLM_MIN_RATE_THRESHOLD`=5 bpm | Longest gap between detected onsets *inside* the trial window (window-edge segments excluded) implies a rate below this floor. |
-| `amplitude_artifact` | `GLM_ARTIFACT_METHOD="hampel_reject_trials"`, `GLM_ARTIFACT_K`=3.5 | Only ever fires under that artifact method; inactive under the current default (`"manual_exclude"`). |
-| `low_information` | `QC_MIN_KNOTS`=5 | Fewer in-window cycles than this many interpolation knots. |
-| `low_coverage` | `QC_MIN_VALID_FRACTION`=0.5 | Finite-sample fraction of the `GLM_PRIMARY_METRIC` series in-window is below this. |
+| cycle coverage | — | Samples outside any detected cycle are invalid (`no_cycle_coverage`). |
+| amplitude spike | `GLM_ARTIFACT_K`=3.5 | Per-cycle Hampel on RA vs. the session median/MAD, **upper bound only** (`amplitude_artifact`). |
+| rate plausibility | `GLM_MIN_RATE_THRESHOLD`=5, `GLM_RATE_ARTIFACT_THRESHOLD`=40 bpm | `60/RP` outside that range (`rate_implausible`). |
+| flat / noisy | `GLM_MIN_STD_RATIO`=0.1, `GLM_Z_SCORE_THRESHOLD`=3.0 | Rolling local std of `raw_z` (window = session median RP) against a robust median/MAD reference (`flat_or_noisy`). |
 
-**`QC_ROBUST_GATES` asymmetry (verified in code):** on the GLM path (default
-`QC_ROBUST_GATES=True`), the session spread feeding `noisy_baseline`
-(`sess_std_std`) and the `atypical_shape` cutoff is `median`/`MAD`-based
-(`airflow_qc.robust_sd`, `robust_cutoff`), not plain `mean`/`std`. The BxB path
-has no `QC_ROBUST_GATES` check at all — it always uses plain `np.nanstd` /
-`np.nanmean`+`np.nanstd` for the same two gates. Same threshold values
-(3.0), different underlying statistic between paths.
+Invalid runs are converted to spans (`_invalid_mask_to_spans`) and fed through
+the existing `missing_spans` → NaN pathway in `build_continuous_series`. Both
+`zscore_subject_series` and the GLM solve already gate on `np.isfinite`, so no
+separate masking is needed downstream. **Stage 4.6's amplitude ceiling
+(`GLM_MAX_ABS_Z`) clears `valid` too**, after z-scoring.
 
-Not a per-trial gate, but shapes what data reaches the gates above: Stage 0's
+**Per-trial bookkeeping** — each trial records `valid_fraction` (Array A
+coverage within `[onset, onset+QC_TRIAL_WINDOW_SEC)`, post-onset only,
+**diagnostic**). `rejected` is set **only** when that fraction is zero
+(`rejection_reason="no_valid_signal"`) — a trial with no data can't be handed a
+pooled β it contributed nothing to. It is not a gate. Current rates: Evening
+721/730 kept (98.8%), Morning 743/771 (96.4%).
+
+`score_ceiling` (`GLM_SCORE_MAX`, default `None` = **disabled**) is the one
+remaining trial-level rejection and is deliberately off: rejecting a trial
+because of the score it produced is circular.
+
+The **BxB path** is unchanged and still uses the old per-trial gate set with
+its own `AIRFLOW_*` config names (`AIRFLOW_Z_SCORE_THRESHOLD`,
+`AIRFLOW_MIN_STD_RATIO`, `AIRFLOW_POST_MIN_STD_RATIO`,
+`RSP_RATE_ARTIFACT_THRESHOLD`, `AIRFLOW_SHAPE_*`, `AIRFLOW_SCORE_MAX`=3.0
+enabled). **The two paths are no longer comparable on rejection** — this is now
+a structural difference, not a naming one.
+
+Not a per-trial gate, but shapes what data reaches Array A: Stage 0's
 QC excursion masking and `flag_deep_breaths` (see Layer 2 — GLM) blank spans
 of signal before scoring, independent of `GLM_ARTIFACT_METHOD`.
 
@@ -314,10 +409,13 @@ above).
 | `airflow_qc.py` | Session-level QC helpers: excursion masking, robust stats, deep-breath flagging, cohort breath-size reference / flat-session report. |
 | `airflow_main.py` | Orchestration: cache load/save, subject/session discovery, dispatch to GLM or BxB scorer, CSV + per-trial review-plot output. |
 | `airflow_mff_show.py` | Diagnostic-only: shows one raw `.mff` straight off the drive, no Layer 1/2 processing — for sessions that failed to make it into the cache. |
-| `airflow_glm_show.ipynb` | Per-subject/session GLM diagnostic plots + the confirmatory Eve-vs-Mor Wilcoxon cell. |
+| `airflow_glm_show.ipynb` | Per-subject/session GLM diagnostic plots. |
 | `airflow_amp_show.ipynb` | Per-subject/session BxB diagnostic plots. |
 | `airflow_qc_show.ipynb` | QC diagnostics (excursion masking, breath size, flat-session report) per subject/session. |
-| `GLM_METHOD_FOUNDATIONS.md` | What the GLM score means, CRF/basis assumptions, per-trial vs. pooled-session estimation, current confirmatory result — read before citing `score_ra`. |
+| `GLM_METHOD_FOUNDATIONS.md` | What the GLM score means, CRF/basis assumptions, per-trial vs. pooled-session estimation, and what has to be demonstrable before a β is worth reading — read before citing `score_ra`. |
 | `DISCUSSION.md` | Open items and audit trail for the GLM method, tracked against PsPM source. |
+| `_scratch/STATUS.md` | **Start here** — what is actually on disk, the open decisions, what is unimplemented. |
+| `_scratch/cycle_rejection_spec.md` | The cycle-based rejection design: call chain, signatures, invariants, what gets deleted. Nothing in it is implemented. |
+| `_scratch/verify_spec_numbers.py` | Regenerates every number in the spec straight from the cache; prints PASS/FAIL per line. |
 | `AMPLITUDE_NORMALIZATION_REVIEW.md` | Whether GLM's raw-unit β₁ should be rescaled for subject dynamic range, checked against PsPM + normalization literature. |
 | `GLM_SIGNAL_REVIEW.md` | Signal-processing-only summary of the GLM chain, referenced against PsPM v7.0.0 MATLAB source line numbers. |

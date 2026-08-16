@@ -52,7 +52,7 @@ review:
 
 1. Our **cycle-detection** filter is a single 2nd-order bandpass where PsPM runs two separate 1st-order `filtfilt` passes (different roll-off/phase). *(The other half of this — one shared FINAL high-pass across all three measures — is now fixed; see Resolved.)*
 2. Per-breath amplitude plausibility — three handling methods are now selectable via `GLM_ARTIFACT_METHOD` (default `manual_exclude` = the coarse session/subject list, unchanged; `hampel_drop_cycles` and `hampel_reject_trials` available + documented). Still OPEN: which to adopt as the standard, and that the Hampel bound is session-relative so it misses a *uniformly*-corrupted session (e.g. DA01) — those still need the manual list.
-3. We fit each trial separately; PsPM fits one model per condition across the whole session — a deliberate choice, but must be disclosed whenever citing the method. *(Now the leading suspect for the null GLM result — see GLM_METHOD_FOUNDATIONS.md §7.)*
+3. We fit each trial separately; PsPM fits one model per condition across the whole session — a deliberate choice, but must be disclosed whenever citing the method. *(`GLM_ESTIMATION="pooled_session"` is now the default and reproduces PsPM's architecture; see GLM_METHOD_FOUNDATIONS.md §5.)*
 
 ---
 
@@ -67,3 +67,10 @@ review:
 8. what does pspm say regarding what should be looked in the raw trial data after a trigger? does necesseraly the peak is the eyeball metric?
 9. make sure loaded trials txt are from the new cache
 10. check lg07 mor
+
+
+
+27/7
+- 2 scalaras for each sesion - eve vs mor total
+- exclude no sound - eve vs mor , and 1 mor eand then 4 scalars, neg vs neu.
+- eve neu vs mor neu in exlcude no sound 

@@ -82,8 +82,9 @@ unresolved (proposing a two-belt calibrated system as a future fix), and explici
 say their own group-level inference approach is the **standard summary-statistics
 approach**: *"we enter single-participant response estimates into a group level
 t-test... in keeping with the bulk of psychophysiological literature."* This is
-the same architecture this project's confirmatory Wilcoxon uses (per-subject mean
-β₁ → group-level test), just with a non-parametric test substituted for small N.
+the same architecture any downstream summary here would use (per-subject mean
+β₁ → group-level test), and it is why the between-subject linear constant they
+name matters: it survives into the per-subject estimate that gets summarised.
 
 **Bottom line for Q4**: PsPM is not silent — it offers within-session z-scoring as
 a named, tested, optional feature, motivated by the SCR literature and shown (in
@@ -183,13 +184,16 @@ normalization is a documented, legitimate, but non-default alternative.
 
 ---
 
-## 3. Tradeoffs for this project's specific design (small-N, paired within-subject, Wilcoxon signed-rank, Evening vs Morning)
+## 3. Tradeoffs for this project's specific design
 
-The confirmatory test never pools raw amplitude *across* subjects — each subject
-is only ever compared to their own Morning value. That means a fixed,
-time-of-day-invariant per-subject gain (e.g. lung size, chest-strap placement)
-cancels in each subject's own Eve−Mor contrast, regardless of whether the raw
-units are ever rescaled. But three real, literature-grounded caveats remain:
+The question here is a **processing** one: does a raw-unit β₁ mean the same thing
+in a deep breather's recording as in a shallow one's, and does any rescaling that
+fixes that introduce a worse problem? Per-subject gain (lung size, sensor
+placement, sensor gain) is a property of the *recording*, not of the physiology,
+and it rides along in every raw amplitude the pipeline produces. Whether it also
+cancels in some downstream comparison is not the criterion — a score that is
+partly a measure of the sensor is a measurement defect regardless. Four real,
+literature-grounded considerations:
 
 **a. Percent signal change relative to a subject's own baseline (subtractive is
 default; divisive is the "percent" variant).**
@@ -209,10 +213,10 @@ Legitimate and precedented (Bach et al. 2016 test it explicitly), but note the
 granularity PsPM implements it at: **per session/file**, not per subject pooled
 across sessions. For this project, Morning and Evening are separate session
 files. Z-scoring *within each session separately* would force each session's
-respiration channel to its own mean-0/std-1 before fitting — which risks
-partially removing the very between-condition (Eve vs Mor) gain difference the
-study is testing for, if genuine reactivity differences manifest partly as
-overall signal variance rather than purely as CRF-shaped bumps. A **per-subject,
+respiration channel to its own mean-0/std-1 before fitting — which destroys any
+real between-session difference in overall signal variance, since each session's
+variance is set to 1 by construction. That is a measurement problem in its own
+right: the normalizer would be removing signal, not just units. A **per-subject,
 cross-session** normalizer (pool both sessions' cycles, compute one
 subject-level scale, apply to both) would avoid that specific failure mode and is
 the correct granularity if this is ever adopted — matching what BxB already does
@@ -230,21 +234,16 @@ normalizer would have to be built from whole-session cycle amplitudes (as BxB's
 session-median already approximates), not from the startle-response windows
 themselves.
 
-**d. Raw units, unnormalized (current GLM default).**
-Not bias-free even under a paired design, in one specific sense: Wilcoxon
-signed-rank does not merely check the *sign* of each subject's Eve−Mor
-difference — it ranks the **magnitudes** of those differences across subjects. A
-subject with an intrinsically larger raw dynamic range (a deep, large-excursion
-breather) will produce a numerically larger raw Eve−Mor difference than a
-shallow breather showing the *same relative* effect, and will therefore receive
-disproportionately more weight (higher rank) in the test statistic. This does not
-inflate Type-I error (the null distribution of signed ranks under permutation is
-still valid regardless of each subject's fixed gain), but it can reduce power to
-detect a genuinely relative (percent-scale) effect that is masked by unrelated
-between-subject gain differences riding along in the rank ordering. This is the
-concrete version of the "interpretability of raw β units" concern named in the
-task brief — it is a power/interpretation issue, not a validity issue, for this
-specific paired test.
+**d. Raw units, unnormalized (current GLM default) — what the number means.**
+A raw β₁ is not comparable across subjects: a deep, large-excursion breather and
+a shallow one showing the *same relative* response produce numerically different
+βs, because the recording's gain is baked into the units. Within one subject the
+gain is fixed, so within-subject comparisons are unaffected; across subjects, a
+raw β is a measurement in that subject's own arbitrary units and must never be
+pooled, averaged, or ranked against another's as though the units matched. This
+is the concrete version of the "interpretability of raw β units" concern in the
+task brief. It constrains what any downstream summary is allowed to do with these
+numbers; it is not, by itself, a reason to add a divisive step (see **a**).
 
 **What would be double-dipping/circular if done wrong**: any normalizer whose
 mean/std/range is computed **from the same post-stimulus trial windows** that
@@ -275,6 +274,7 @@ current raw-unit default — it documents that raw units are PsPM's own default
 too, names the real (if secondary, power-oriented rather than validity-oriented)
 tradeoff versus normalizing, and flags the specific circularity and granularity
 traps (§3b, §3-double-dipping) to avoid if a normalization scheme is adopted
-later. Any such change remains the user's call, to be pre-registered rather than
-chosen by watching the Eve-vs-Mor p-value, per this project's existing
-multiplicity discipline (`GLM_METHOD_FOUNDATIONS.md` §7, `CLAUDE.md`).
+later. Any such change remains the user's call, and must be argued from the
+signal — what the normalizer is made of, what it removes, and whether its source
+data is independent of the values it rescales — never from what it does to a
+downstream contrast (`GLM_METHOD_FOUNDATIONS.md` §7, root `.claude/CLAUDE.md`).
