@@ -113,6 +113,7 @@ how long a reply should be. Long-form output goes to a `.md` file under
 | `Airflow/_scratch/METHOD.md` | **the method** — every stage, every parameter with its provenance, known divergences, claims |
 | `Airflow/_scratch/verify_spec_numbers.py`, `debug_pipeline.py` | the two verifiers; both currently green |
 | `Airflow/GLM_METHOD_FOUNDATIONS.md` | PsPM cascade/GLM background; **stale** on rejection |
+| `Airflow/DISCUSSION.md` | open questions and reasoning log; **stale** on rejection |
 | `Airflow/airflow_glm_input_show.ipynb` | marked BROKEN — do not run |
 
 ---
