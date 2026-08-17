@@ -28,7 +28,14 @@ def _rolling_median(x, win):
 GATE_ORDER = ("unmeasurable", "extreme", "rate_implausible", "no_inspiration", "lost_lock")
 
 
-def classify_cycles(cycles, config):
+def classify_cycles(cycles, config, window_mask=None):
+    # window_mask marks the cycles inside the analysed window (the union of the
+    # session's response_range_sec). Every reference statistic and every reported
+    # count is computed on those cycles alone -- a subject is judged only on its
+    # scored window. The gates themselves still run on all cycles: an
+    # out-of-window artifact must still be blanked out of the causal filter's
+    # warm-up span. window_mask=None means "all cycles" (callers outside the
+    # pipeline, e.g. probes).
     n = len(cycles)
     rejected = np.zeros(n, dtype=bool)
     reason = [None] * n
@@ -36,7 +43,10 @@ def classify_cycles(cycles, config):
     ra = np.array([c["RA"] for c in cycles], dtype=float) if n else np.zeros(0)
     rp = np.array([c["RP"] for c in cycles], dtype=float) if n else np.zeros(0)
     usable = np.isfinite(ra) & (ra > 0)
-    n_ref = int(usable.sum())
+    wmask = (np.ones(n, dtype=bool) if window_mask is None
+             else np.asarray(window_mask, dtype=bool))
+    ref = usable & wmask
+    n_ref = int(ref.sum())
 
     min_ref = getattr(config, "CYCLE_MIN_REF_CYCLES", 30)
     scale   = getattr(config, "CYCLE_LOGRA_SCALE", 0.2378)
@@ -45,7 +55,7 @@ def classify_cycles(cycles, config):
     min_pk  = getattr(config, "CYCLE_LOSTLOCK_MIN_PEAKS", 3)
 
     abstained = []
-    median_ra = float(np.median(ra[usable])) if n_ref else np.nan
+    median_ra = float(np.median(ra[ref])) if n_ref else np.nan
     if n_ref >= min_ref and np.isfinite(median_ra) and median_ra > 0:
         cut = median_ra * float(np.exp(k * scale))
     else:
@@ -64,11 +74,19 @@ def classify_cycles(cycles, config):
         elif c.get("n_peaks", 0) >= min_pk:
             rejected[i], reason[i] = True, "lost_lock"
 
-    report = _cycle_report(cycles, rejected, reason, abstained, n_ref, median_ra, cut)
+    report = _cycle_report(cycles, rejected, reason, abstained, n_ref, median_ra, cut,
+                           window_mask=wmask)
     return rejected, reason, report
 
 
-def _cycle_report(cycles, rejected, reason, abstained, n_ref, median_ra, cut):
+def _cycle_report(cycles, rejected, reason, abstained, n_ref, median_ra, cut,
+                  window_mask=None):
+    n = len(cycles)
+    wmask = (np.ones(n, dtype=bool) if window_mask is None
+             else np.asarray(window_mask, dtype=bool))
+    cycles = [c for c, k in zip(cycles, wmask) if k]
+    rejected = np.asarray(rejected, dtype=bool)[wmask]
+    reason = [r for r, k in zip(reason, wmask) if k]
     dur = np.array([c["RP"] for c in cycles], dtype=float) if len(cycles) else np.zeros(0)
     total_sec = float(dur.sum())
     counts, seconds = {}, {}
