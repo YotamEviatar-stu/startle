@@ -34,11 +34,29 @@ Loaded only for sessions working under `Airflow/`. See the project root `.claude
 > **4 · Current settings** (`airflow_config.py`): `CYCLE_RP_MAX = 7.0` (no `CYCLE_RP_MIN`),
 > `CYCLE_LOGRA_SCALE = 0.2378` / `CYCLE_LOGRA_K = 6.0` → `extreme` at 4.17x session median,
 > `CYCLE_LOSTLOCK_MIN_PEAKS = 3`, `CYCLE_MIN_REF_CYCLES = 30`, `TRIAL_MIN_VALID_FRAC = 0.60`,
+> `ANAL_PRE_BASELINE_SEC = 60.0`, `GLM_PRE_FIXATION_SEC = 15.0` / `GLM_POST_CODE_SEC = 15.0`,
 > `GLM_CONDITION_FIELD = "none"` (one beta per session), `GLM_ESTIMATION = "pooled_session"`.
 >
-> **5 · Scope.** Only **36.5 %** of detected cycles lie inside the analysis window (6218 of
-> 17028; 6.56 h of 18.50 h). Any gate count or balance figure computed over the whole
-> recording is ~3x inflated and answers a different question.
+> **5 · Scope — rewritten 2026-08-17.** The **analysed window** is defined once per session at
+> `airflow_glm.py:845-855`: from `min(first picture code, first d105 - ANAL_PRE_BASELINE_SEC)`
+> to the last `response_range_sec` boundary (D124). **40.7 %** of detected cycles lie inside it
+> (6960 of 17097). Every reference statistic and every reported count is now computed on that
+> span alone — `classify_cycles(..., window_mask=)` and `_cycle_report(..., window_mask=)` in
+> `airflow_qc.py`, `zscore_subject_series(..., window_masks=)` in `airflow_glm.py`;
+> `admit_trials` always was. **Do not reintroduce a whole-recording statistic.**
+>
+> Two deliberate exceptions, both measured — see `METHOD.md` §6.0 and §9.6:
+> - **Gates still run on every cycle**, so an out-of-window artifact is blanked out of the
+>   filter's warm-up. Only the reference and the report are restricted.
+> - **`build_continuous_series` still reads the whole pre-window signal.** RA's causal
+>   high-pass is 0.001 Hz (tau = 159 s); cropping its input moves the in-window RA series by
+>   0.112 robust-SD median / 0.507 worst, and a 30 s or 60 s pre-roll does not substitute.
+>   That span is warm-up, not data, and its own output is already NaN before the window.
+>
+> **6 · Open, not resolved** (METHOD.md §9.6): ~11.7 s of rows at the start of each solve carry
+> no regressor support (`GLM_PRE_FIXATION_SEC = 15` vs the CRF's -10 s support); varying that
+> constant moves beta_RA by up to **1.04 between-session SD** in the worst session. And only
+> 11/37 sessions have >= 3 tau of filter warm-up. Neither is fixed.
 >
 > **Authoritative instead of this file:** `airflow_glm.py`, `airflow_qc.py`,
 > `airflow_config.py` for what runs; `Airflow/_scratch/METHOD.md` for the complete method

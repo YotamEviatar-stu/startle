@@ -1,7 +1,7 @@
 # Airflow respiration GLM — method description
 
 Describes what the code in `Airflow/airflow_glm.py`, `airflow_qc.py` and `airflow_config.py`
-does, as of 2026-08-16. Written for review.
+does, as of 2026-08-17. Written for review.
 
 This document is **descriptive**. It states what each stage computes, the value of every
 parameter, and where each value came from. It does not argue that any choice is correct, and
@@ -133,6 +133,47 @@ This is the only feature not measured on `signal_raw`. It drives two of the five
 
 ## 6 · Stage 4 — one verdict per breath
 
+### 6.0 The analysed window
+
+Added 2026-08-17. Every reference statistic and every reported count in this pipeline is
+computed over one span per session, defined in `airflow_glm.py:845-855`:
+
+```
+anal_hi = max(response_range_sec[1])                      # last trigger boundary (D124)
+anal_lo = min( min(response_range_sec[0]),                # first picture code
+               first d105_time − ANAL_PRE_BASELINE_SEC )  # 60 s of pre-task rest
+```
+
+`response_range_sec` comes from the DIN triggers alone (`extras/trial_epochs.py`:
+`[code_n, code_{n+1})`, last trial closed by D124) — no signal property enters it. A cycle is
+in-window if `onset_time < anal_hi and assign_time > anal_lo`; a sample is in-window if
+`anal_lo ≤ t < anal_hi`. **6960 of 17097 cycles (40.7 %)** qualify.
+
+Carried as `window_mask=` into `classify_cycles` and `_cycle_report` (§6.1, §6.5) and as
+`window_masks=` into `zscore_subject_series` (§8.1). `admit_trials` was already window-only.
+Rationale: a subject is judged only on its scored window, so no pre-task or post-task signal
+may set a threshold, a scale, or a reported rate. **Investigator.**
+
+Two things this deliberately does *not* do:
+
+- **Gates still run on every cycle**, in-window or not. An out-of-window artifact is still
+  rejected so it is blanked out of the causal filter's warm-up span. Only the *reference*
+  and the *report* are restricted.
+- **`build_continuous_series` still reads the whole pre-window signal.** The RA sensitivity
+  filter is causal with a 0.001 Hz high-pass (τ = 159 s), so its output inside the window
+  depends on the preceding minutes; that span is warm-up, and its own output is already NaN
+  before the window. Measured: cropping the filter's input instead moves the in-window RA
+  series by 0.112 robust-SD median / 0.507 worst-session, and a fixed 30 s or 60 s pre-roll
+  does not substitute (0.098 / 0.087 median). `lfilter_zi` initialisation (0.135) and
+  median-centring the knots (0.115) were tested and both failed. See §9.6.
+
+`ANAL_PRE_BASELINE_SEC = 60.0` is **Investigator**. D101, the true task-block start, is not
+in the Layer 1 cache (§9.1), so the boundary is a fixed offset before the first fixation,
+applied identically to every session; all 37 have > 139 s of pre-task recording, so none is
+truncated. It adds 11–26 breaths per session (median 19, +11.3 %), whose median RA is 1.03×
+the trial-window median (range 0.57–1.51). Effect of adding it: the combined reference median
+moved +0.1 % (range −6.0 % to +5.9 %) and one trial admission changed.
+
 ### 6.1 `classify_cycles` — five gates, first match wins
 
 Evaluated in `GATE_ORDER`, so attribution is deterministic. Each cycle gets one verdict and
@@ -150,9 +191,12 @@ There is **no lower bound on `RP`**. `CYCLE_RP_MIN` does not exist in any `.py` 
 period floor is the 1 s refractory in `detect_cycles` (§4); the minimum `RP` observed over the
 cohort is 1.20 s.
 
-**Abstention.** Gate 2 is the only session-relative gate. If a session has fewer than
-`CYCLE_MIN_REF_CYCLES = 30` usable cycles, or a non-positive median `RA`, the cut is set to
-`NaN`, the gate does not fire, and `"extreme"` is appended to `report["abstained"]`.
+**Abstention.** Gate 2 is the only session-relative gate. Its reference — `median_RA` and the
+usable-cycle count `n_ref` — is taken over **in-window cycles only** (§6.0). If a session has
+fewer than `CYCLE_MIN_REF_CYCLES = 30` usable in-window cycles, or a non-positive median
+`RA`, the cut is set to `NaN`, the gate does not fire, and `"extreme"` is appended to
+`report["abstained"]`. No session abstains at the current window (smallest in-window count
+is 120 cycles).
 `CYCLE_MIN_REF_CYCLES = 30` is **Investigator**, no recorded rationale.
 
 ### 6.2 Provenance of the `extreme` gate
@@ -164,9 +208,12 @@ right-skewed, and a MAD rule applied to it directly put the cutoff at 1.48–3.2
 - `CYCLE_LOGRA_SCALE = 0.2378` is `median|log RA − median(log RA)| × 1.4826`, pooled over
   37 sessions / 6411 breaths, computed 2026-08-15. It is **frozen at cohort level and never
   recomputed per session**: recorded reason is that with each session's own log-scale, the
-  same `k` spans cutoffs from 1.59× to 11.59×.
-- `CYCLE_LOGRA_K = 6.0` gives `exp(6 × 0.2378)` = 4.17× the session median, removing 48
-  breaths cohort-wide (0.75 % of 6411). Recorded reason: it is the largest integer `k` that
+  same `k` spans cutoffs from 1.59× to 11.59×. Recomputing the same statistic over the
+  current analysed window (§6.0, 6960 breaths) gives **0.2439**. The constant is deliberately
+  **not** updated to match — a frozen threshold that is refitted whenever the window
+  definition moves is not frozen. See §9.6.
+- `CYCLE_LOGRA_K = 6.0` gives `exp(6 × 0.2378)` = 4.17× the session median, removing 53
+  in-window breaths cohort-wide (0.76 % of 6960). Recorded reason: it is the largest integer `k` that
   still catches a hand-labelled cough at 4.31× (k = 7 cuts at 5.28× and misses it), while two
   other hand-labelled artifacts at 7.21× and 7.07× are caught at every `k` considered.
 
@@ -213,7 +260,11 @@ restriction to `extreme`, nor for `gap_fill`'s single-pass depth.
 ### 6.5 Reporting
 
 `classify_cycles` returns per-gate **counts and seconds**, `kept_frac`, `kept_seconds_frac`,
-the abstention list, `n_ref_cycles`, `median_RA` and the computed cut.
+the abstention list, `n_ref_cycles`, `median_RA` and the computed cut. All counts and
+fractions are over **in-window cycles only** (§6.0); `_cycle_report` filters by `window_mask`
+before tallying, so `n_cycles` is the in-window count, not the recording's. Before
+2026-08-17 these were whole-recording tallies, which made a session read e.g. "182/182
+breaths kept" beside a gate list of 19 rejections that all lay outside its window.
 
 ---
 
@@ -244,8 +295,9 @@ blanking (rather than blanking first) is **Investigator**.
 ### 8.1 `zscore_subject_series`
 
 `GLM_ZSCORE_METRIC = {"RP": False, "RA": True, "RFR": True}`. For each enabled metric, the
-finite samples of **all of one subject's sessions** are pooled and the series is transformed
-`(x − mean) / std`. **Investigator.** PsPM does not rescale `y`; it normalises the design
+finite **in-window** samples (§6.0, `window_masks=`) of **all of one subject's sessions** are
+pooled and the whole series — warm-up included — is transformed `(x − mean) / std`.
+**Investigator.** PsPM does not rescale `y`; it normalises the design
 (basis to unit range, convolved columns mean-centred). Recorded reason: removes
 between-subject rib-cage/lung-volume differences. Pooling across the subject's sessions
 rather than within each is deliberate, so the between-session contrast is not normalised away.
@@ -349,10 +401,45 @@ ground truth for breath validity in this dataset.
 
 ### 9.5 Scope
 
-Roughly 63 % of each recording lies outside the analysed window. Gate counts computed over
-the whole recording are ~3× those computed in-window, and their between-session balance is a
-different quantity. Under `pooled_session`, out-of-window samples still enter the solve and
-shape the intercept and residual.
+Roughly 59 % of each recording lies outside the analysed window (§6.0). As of 2026-08-17 no
+reference statistic or reported count is computed over that span; before then, all of them
+were. What still reads out-of-window signal is (a) the causal sensitivity filter's warm-up,
+deliberately (§6.0), and (b) NK2's peak thresholds (§9.2), not yet quantified.
+
+Under `pooled_session` the solve still includes the samples between
+`first d105 − GLM_PRE_FIXATION_SEC (15 s)` and the first picture code, where no regressor has
+support — see §9.6.
+
+### 9.6 Boundary constants that are not derived from the model
+
+Three spans coexist and are set independently; none of the three is currently derived from
+the design.
+
+| constant | value | what it bounds |
+|---|---|---|
+| `ANAL_PRE_BASELINE_SEC` | 60 s | how far back the *reference statistics* look (§6.0) |
+| `GLM_PRE_FIXATION_SEC` / `GLM_POST_CODE_SEC` | 15 s / 15 s | where the series holds valid *data rows* for the solve |
+| CRF kernel support | −10 s … +30 s | where the *design* has any support at all |
+
+Two consequences, both measured 2026-08-17 and neither resolved:
+
+1. **Dead rows at the start of the solve.** The first d105 precedes the first picture code by
+   5.2–8.2 s (median 6.7 s), so with `GLM_PRE_FIXATION_SEC = 15` valid data begins 21.7 s
+   before the first onset while the first regressor's support begins at −10 s — and the
+   Gaussian is already negligible there (τ − 3σ = −3.1 s). About 11.7 s of rows carry no
+   regressor at all, ~18.6 s carry none of consequence. Varying `GLM_PRE_FIXATION_SEC`
+   against its current 15 s moves β_RA by, in units of its between-session SD (5.07e-01):
+   0 s → 0.047 median / **1.04 worst**; 5 s → 0.034 / 0.48; 10 s → 0.016 / 0.07;
+   30 s → 0.060 / 0.48; 60 s → 0.105 / 0.67. Deriving the span from the kernel instead
+   (`win_start = min(code_time) − 10 s`) would remove the constant and the dead rows; not done.
+2. **Unequal filter warm-up.** Available pre-window recording is 139 s / 326 s / 1091 s
+   (min / median / max) against the RA high-pass τ = 159 s — ≥ 1 τ in 31/37 sessions, ≥ 2 τ in
+   22/37, ≥ 3 τ in only **11/37**. The RA sensitivity filter is therefore not fully settled at
+   window start in most sessions, by differing amounts per subject.
+
+A third, smaller item: `CYCLE_LOGRA_SCALE` was frozen at 0.2378 from the pre-2026-08-17
+window; the same statistic over the current window is 0.2439 (§6.2). It is left frozen
+deliberately.
 
 ---
 
