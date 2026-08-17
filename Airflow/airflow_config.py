@@ -24,8 +24,6 @@ AIRFLOW_LOWPASS  = 70.0
 RSP_CLEAN_METHOD         = "khodadad2018"
 RSP_PEAK_METHOD_CLEANING = "khodadad2018"
 
-ANAL_TMIN, ANAL_TMAX = -5.0, 86.0
-
 PERFORM_SCORING = True
 SCORING_METHOD  = "glm_deconvolution"   # "glm_deconvolution" | "peak_excursion_normalized"
 
@@ -67,6 +65,8 @@ GLM_USE_DERIVATIVE = {"RP": False, "RA": True, "RFR": True}
 
 GLM_PRE_FIXATION_SEC = 15.0
 GLM_POST_CODE_SEC    = 15.0
+
+ANAL_PRE_BASELINE_SEC = 60.0
 
 
 QC_ENABLED            = False
