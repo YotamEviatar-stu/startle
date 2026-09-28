@@ -1,1 +1,46 @@
-ml/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE/editor
+.vscode/
+!.vscode/tasks.json
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Output directories
+breathmetrics_py/_cache/
+breathmetrics_py/_out_final/
+
+# Raw data and oversized figures
+local/
+*.mff/
+figures/breathmetrics_all_sessions.pdf
+
+# MNE/EEG raw intermediate cache
+*.pkl
+
+# others
+*.tmp
+
+# MATLAB
+*.mat
+*.asv
+*.MATLABDriveTag
+airflow_cache.pkl

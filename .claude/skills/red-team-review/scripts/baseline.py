@@ -18,9 +18,9 @@ It NEVER sets FORCE_RELOAD and NEVER reads an MFF. It only loads the pickle and
 runs the fast in-memory Layer 2. If the pickle is missing it says so and exits —
 it does not rebuild. This is the guarantee that makes the skill safe to run.
 
-Usage (run from the repo root, with Startle/ on the path):
-    PYTHONPATH=<repo>/Startle <repo>/.venv/bin/python baseline.py airflow
-    PYTHONPATH=<repo>/Startle <repo>/.venv/bin/python baseline.py hr
+Usage (run from the repo root):
+    PYTHONPATH=<repo> <repo>/.venv/bin/python baseline.py airflow
+    PYTHONPATH=<repo> <repo>/.venv/bin/python baseline.py hr
 """
 import sys
 import os
@@ -35,7 +35,7 @@ except Exception:
     wilcoxon = None
 
 PIPELINES = {
-    "airflow": ("Airflow.airflow_config", "Airflow.airflow_processor", "airflow_cache.pkl"),
+    "airflow": ("Airflow.airflow_config", "Airflow.airflow_amp_processor", "airflow_cache.pkl"),
     "hr":      ("HR.hr_config",           "HR.hr_processor",           "hr_cache.pkl"),
 }
 

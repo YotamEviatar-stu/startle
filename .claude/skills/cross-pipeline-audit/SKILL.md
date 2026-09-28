@@ -29,7 +29,7 @@ Read these files in full:
 
 **Target — read whichever pipelines are being audited:**
 - HR: `HR/hr_config.py`, `HR/hr_processor.py`, `HR/hr_main.py`
-- Airflow: `Airflow/airflow_config.py`, `Airflow/airflow_processor.py`, `Airflow/airflow_main.py`
+- Airflow: `Airflow/airflow_config.py`, `Airflow/airflow_amp_processor.py`, `Airflow/airflow_main.py`
 
 Do not skim. The deviations that matter are often one or two lines buried in helper functions.
 

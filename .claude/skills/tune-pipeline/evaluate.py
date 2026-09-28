@@ -2,7 +2,7 @@
 """
 Pipeline evaluator — reports key metrics for HR or Airflow pipeline.
 
-Usage (run from /Users/yotameviatar/vs_code):
+Usage (run from /Users/yotameviatar/startle-1):
   .venv/bin/python .claude/skills/tune-pipeline/evaluate.py hr
   .venv/bin/python .claude/skills/tune-pipeline/evaluate.py airflow
 """
@@ -15,9 +15,8 @@ import math
 import numpy as np
 from scipy import stats
 
-REPO = os.path.expanduser("~/vs_code")
+REPO = os.path.expanduser("~/startle-1")
 sys.path.insert(0, REPO)
-sys.path.insert(0, os.path.join(REPO, "Startle"))
 
 pipeline = sys.argv[1].lower() if len(sys.argv) > 1 else "hr"
 
@@ -33,7 +32,7 @@ if pipeline == "hr":
     print(f"         SCORE_MAX_PCT={getattr(config,'SCORE_MAX_PCT',None)}  "
           f"HR_Z_SCORE_THRESHOLD={getattr(config,'HR_Z_SCORE_THRESHOLD',None)}")
 elif pipeline == "airflow":
-    from Airflow import airflow_config as config, airflow_processor as processor  # noqa: F811
+    from Airflow import airflow_config as config, airflow_amp_processor as processor  # noqa: F811
     cache_path = os.path.join(config.OUTPUT_DIR, "_cache", "airflow_cache.pkl")
     label_min = None
     label_max = None
@@ -50,7 +49,7 @@ else:
 # ── Load cache ────────────────────────────────────────────────────────────────
 assert os.path.exists(cache_path), (
     f"Cache not found: {cache_path}\n"
-    f"Connect the drive and run: .venv/bin/python Startle/"
+    f"Connect the drive and run: .venv/bin/python "
     f"{'HR/hr_main.py' if pipeline == 'hr' else 'Airflow/airflow_main.py'}"
 )
 with open(cache_path, "rb") as f:
