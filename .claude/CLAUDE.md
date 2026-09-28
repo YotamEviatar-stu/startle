@@ -10,18 +10,20 @@ This is **academic research**. The deliverable is a pipeline whose processing ca
 
 **Condition labels are blind to the pipeline.** No cleaning, rejection, or scoring function may read the session key (`eve`/`mor`), the valence label, or `has_sound`. Evening vs Morning survives in exactly one role: an **after-the-fact balance report** — how much signal each condition lost, seconds-weighted — which exists to catch a condition-biased gate. It is never an objective, never a gate, and never a reason to move a threshold.
 
-**Unit of judgement.** Airflow judges the **breath cycle**: one verdict per breath, made once, from that breath's own measured properties, feeding downstream stages that never re-derive validity from window statistics. `Airflow/_scratch/METHOD.md` describes the method and its claims (§10) — read it before touching Airflow rejection. HR has no breath analogue but follows the same principle: judge the signal, not the trial's outcome.
+**Unit of judgement.** The **breath** is the unit: one verdict per breath, made once, from that breath's own measured properties, feeding downstream stages that never re-derive validity from window statistics. Invoke `/breathmetrics` before touching detection or rejection — BreathMetrics has no automatic rejection of its own (its only rejection is a human clicking in `bmGui.m`, and it reaches nothing but the session-summary averages), so every gate in this pipeline is ours to justify from the signal.
 
-**Active pipelines:** HR (`HR/`) and Airflow (`Airflow/`) — independent physiological channels of the same recordings. Each must be independently valid; neither borrows credibility from the other.
+**Active line of work:** the BreathMetrics port — `breathmetrics_py/` (Python), with the MATLAB `breathmetrics/` tree as ground truth.
+
+**Superseded — the old method.** The Airflow GLM path (`Airflow/`, `glm_deconvolution`, `RA_norm`/`RFR_norm`, `beta`/CRF, `CYCLE_*`/`TRIAL_*` constants) is historical background, not current state; its code has been removed. Do not read `Airflow/CLAUDE.md`, and do not carry GLM or `RA_norm` framing into a session, unless the user names Airflow. The live settings (`SUBJECTS_EXCLUDE`, manual span/trial lists, data paths) moved to `breathmetrics_py/pipeline_config.py` on 2026-09-28; `Airflow/` no longer exists.
 
 **Canonical reference:** EMG raw (`extras/emg_raw_potentiation.py`) defines the event logic, trial structure, DIN trigger handling, and baseline approach for generic helpers only (file discovery, event extraction) — epoch/trial extraction itself now lives in `extras/trial_epochs.py` (see `/startle-experiment`). All pipelines must be consistent with it.
 
 ## Pipeline Conventions
 
-When adapting or modifying a pipeline, read the EMG reference first and mirror its structure exactly — do not introduce custom approaches unless explicitly asked. For deeper cross-pipeline consistency checks, invoke `/cross-pipeline-audit`.
+When adapting or modifying a pipeline, read the EMG reference first and mirror its structure exactly — do not introduce custom approaches unless explicitly asked.
 
 Key technical dimensions that must be justified rigorously and consistently:
-- **Filtering** — bandpass / highpass / lowpass cutoffs appropriate to the signal (HR vs. Airflow have different frequency content); document the choice.
+- **Filtering** — bandpass / highpass / lowpass cutoffs appropriate to the signal (EMG vs. nasal-pressure airflow have different frequency content); document the choice.
 - **Baseline** — pre-stimulus baseline window length and reference method (mean subtraction, z-score) must match across conditions and sessions.
 - **Epoch timing** — onset offset relative to DIN trigger, epoch length, and any pre/post padding must be principled and matched to the EMG reference.
 - **Rejection** — one decision point per pipeline, made on the signal's own measured properties, with the reason recorded per unit. Never re-derive validity downstream; never reject on the score being scored. Where a reference statistic is untrustworthy, the gate **abstains and says so** rather than silently passing. Per-pipeline thresholds live in each pipeline's own `CLAUDE.md`.
@@ -30,17 +32,13 @@ Key technical dimensions that must be justified rigorously and consistently:
 
 ## Per-Pipeline State
 
-Each pipeline's current scoring method, rejection gates, cache-layer boundary, and staleness caveats live in its own directory-scoped file, which loads automatically only when working under that directory: `Airflow/CLAUDE.md` and `HR/CLAUDE.md`. Read the relevant one before changing pipeline behaviour; do not duplicate its contents here.
+The active line's entry point is `breathmetrics_py/final_pipeline.py`, configured by `breathmetrics_py/pipeline_config.py` and described in `breathmetrics_py/PIPELINE_WALKTHROUGH.md`; the MATLAB spec, porting traps and sanctioned deviations live in `.claude/skills/breathmetrics/references/`. The MATLAB `breathmetrics/` tree was moved out of the repo on 2026-09-28 (to `~/startle-1_removed_20260928/breathmetrics/`).
 
 ## Skills
 
-Cross-pipeline skills, to be invoked proactively (see each skill's own description): `/startle-experiment` (start of any new session, before touching HR or Airflow code), `/cross-pipeline-audit` (whenever HR or Airflow code is written or reviewed), `/red-team-review` (before trusting any processed output — audits whether each stage does what it claims on the real signal), `/startle-research` (domain literature/methodology research — checks `papers/` and existing method docs before searching externally).
+Invoke proactively on the active line: `/breathmetrics` (whenever BreathMetrics or `breathmetrics_py/` is involved at all — porting, debugging, parameter provenance, MATLAB-vs-Python parity), `/nasal-pressure-flow-volume` (pressure→flow/volume questions and what this sensor can support), `/startle-research` (domain literature — checks `papers/` first), `/startle-experiment` (data layout, CSV structure, DIN trigger scheme).
 
 There is deliberately **no parameter-search skill**. Coordinate descent over analysis parameters against an outcome was removed on 2026-08-12; a threshold is chosen from the signal and frozen, not searched.
-
-Airflow-specific: `/pspm-respiration-audit` (verifies Airflow/respiration code against PsPM source). It lives at repo root rather than under `Airflow/` because directory-scoped skills do not register in sessions started from the repo root — and sessions must start there for memory to resolve.
-
-Directory-scoped skills load only in sessions touching their directory: `/run-hr` under `HR/`.
 
 ## Plotting
 
@@ -60,7 +58,7 @@ This overrides the general instinct to document non-obvious choices while code i
 
 General communication/explanation style lives in `~/.claude/CLAUDE.md` and applies here too — including the **answer-length ceiling (3 paragraphs / ~20 sentences max, max 3 findings per audit report — aim well below it)**, which binds skill output in this repo as well as ordinary replies; plus the numeric-example format for code changes, layered concept teaching, orienting-in-codebase requirements, test-statistic/p-value reporting, and not flagging theoretical issues on uniform data. Startle-specific addition:
 
-- When explaining a paper's method (e.g. PsPM's GLM), stay at the level of what's specific to Startle/PsPM: canonical basis functions and their parameters, orthogonalization, event-train construction from the experimental design, per-modality filter choices, session-wide vs. per-trial architecture. Don't derive generic OLS/regression mechanics from scratch.
+- When explaining a paper's method (e.g. BreathMetrics), stay at the level of what's specific to that method: sliding-window extrema, onset/pause detection thresholds, per-breath volume integration, smoothing windows and their parameters at this sample rate. Don't derive generic signal-processing or statistics mechanics from scratch.
 
 ## Data & Caching
 
