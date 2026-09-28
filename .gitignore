@@ -28,9 +28,8 @@ env/
 breathmetrics_py/_cache/
 breathmetrics_py/_out_final/
 
-# Raw data, papers and oversized figures
+# Raw data and oversized figures
 local/
-papers/
 *.mff/
 figures/breathmetrics_all_sessions.pdf
 
