@@ -25,7 +25,14 @@ env/
 *.log
 
 # Output directories
-ecg_output/
+breathmetrics_py/_cache/
+breathmetrics_py/_out_final/
+
+# Raw data, papers and oversized figures
+local/
+papers/
+*.mff/
+figures/breathmetrics_all_sessions.pdf
 
 # MNE/EEG raw intermediate cache
 *.pkl
@@ -33,7 +40,8 @@ ecg_output/
 # others
 *.tmp
 
-# PsPM vendored MATLAB toolbox (extras/PsPM_v7.0.0)
+# MATLAB
 *.mat
 *.asv
 *.MATLABDriveTag
+airflow_cache.pkl

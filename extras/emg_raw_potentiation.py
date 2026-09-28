@@ -144,6 +144,70 @@ def get_events_from_eeg(raw_eeg):
     return pd.DataFrame(event_data).sort_values("Sample").reset_index(drop=True)
 
 
+class TriggerAlignmentError(Exception):
+    """This session's triggers cannot be aligned to its signal."""
+
+
+def _mff_sfreq(mff_path):
+    from mne.io.egi.general import _block_r
+    from breathmetrics_py.load_mff import _pns_files
+
+    bin_path, _, _ = _pns_files(mff_path)
+    if bin_path is None:
+        raise RuntimeError(f"{mff_path} has no PNS signal file")
+    with open(bin_path, "rb") as fid:
+        block = _block_r(fid)
+    if block is None:
+        raise RuntimeError(f"{bin_path} has no header block")
+    return float(block["sfreq"])
+
+
+def events_from_mff(mff_path):
+    """(events_df, sfreq) read from the session's own event XMLs.
+
+    Same (Channel, Sample) table get_events_from_eeg recovers by thresholding
+    MNE's synthesised stim channels, but read from where MFF actually stores
+    the triggers -- timestamps in Events_*.xml, not samples in signal1.bin.
+    Only valid for an uncropped recording.
+    """
+    from datetime import datetime
+    from defusedxml.minidom import parse
+
+    n_epochs = len(parse(os.path.join(mff_path, "epochs.xml"))
+                   .getElementsByTagName("epoch"))
+    if n_epochs != 1:
+        raise TriggerAlignmentError(
+            f"{os.path.basename(mff_path)} has {n_epochs} recording epochs. "
+            "Event samples run on the gap-inclusive timeline while the signal "
+            "readers concatenate blocks gap-free, so the two do not align.")
+
+    sfreq = _mff_sfreq(mff_path)
+    info = parse(os.path.join(mff_path, "info.xml"))
+    t0 = datetime.fromisoformat(
+        info.getElementsByTagName("recordTime")[0].firstChild.data)
+
+    rows = []
+    for name in sorted(os.listdir(mff_path)):
+        if not (name.startswith("Events_") and name.endswith(".xml")):
+            continue
+        for ev in parse(os.path.join(mff_path, name)).getElementsByTagName("event"):
+            code_nodes = ev.getElementsByTagName("code")
+            if not code_nodes or code_nodes[0].firstChild is None:
+                continue
+            code = code_nodes[0].firstChild.data
+            if not code.startswith("D"):
+                continue
+            begin = datetime.fromisoformat(
+                ev.getElementsByTagName("beginTime")[0].firstChild.data)
+            d = begin - t0
+            us = d.days * 86_400_000_000 + d.seconds * 1_000_000 + d.microseconds
+            rows.append({"Channel": code, "Sample": us * int(sfreq) // 1_000_000})
+
+    if not rows:
+        return pd.DataFrame(columns=["Channel", "Sample"]), sfreq
+    return pd.DataFrame(rows).sort_values("Sample").reset_index(drop=True), sfreq
+
+
 # ── 3. Ratings classification ─────────────────────────────────────────────────
 
 def load_and_classify_ratings(csv_path: str):

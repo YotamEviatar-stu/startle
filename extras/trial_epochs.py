@@ -1,5 +1,5 @@
 """
-Shared trial/epoch construction for all Startle pipelines (EMG, HR, Airflow).
+Shared trial/epoch construction for all Startle pipelines (EMG, Airflow).
 
 Defines the validated per-trial cycle within the real task block (between D101
 and D124):
@@ -50,8 +50,7 @@ TRIGGER_STARTLE       = emg.TRIGGER_STARTLE         # 110
 # [D105_n, D105_{n+1}) segment scan (response windows run ~13-20s, wide
 # enough to silently pick up a D110 that belongs to neither this trial nor
 # is a real match -- see the git history of this constant for that bug).
-# Re-measure with inspect_triggers.py before changing this value; do not
-# guess it.
+# Re-measure before changing this value; do not guess it.
 D110_WINDOW_SEC = 4.5
 
 _STRUCTURAL_RE = re.compile(r"^D(\d{3})$")   # D101, D105, D110, D124, ...
@@ -59,8 +58,7 @@ _CODE_DIN_RE   = re.compile(r"^DIN(\d)$")    # DIN1..DIN9   (single-digit codes)
 _CODE_DI_RE    = re.compile(r"^DI(\d{2,})$") # DI10..DI99+  (two-digit+ codes)
 
 
-class TriggerAlignmentError(Exception):
-    """D105/code-channel counts or values don't match the session's CSV."""
+TriggerAlignmentError = emg.TriggerAlignmentError
 
 
 def load_all_trials_ratings(csv_path: str) -> pd.DataFrame:
@@ -112,10 +110,9 @@ def _merge_contiguous(events_df: pd.DataFrame):
     return merged
 
 
-def first_session_marker_sample(raw):
+def first_session_marker_sample(events_df):
     """The task block's D101 sample -- everything before this is pre-task
     idle time (impedance check, setup), not part of the recorded protocol."""
-    events_df = emg.get_events_from_eeg(raw)
     merged = _merge_contiguous(events_df)
     channels = [m["Channel"] for m in merged]
     if "D101" not in channels:
@@ -123,11 +120,56 @@ def first_session_marker_sample(raw):
     return merged[channels.index("D101")]["Sample"]
 
 
-def build_trial_epochs(raw, ratings_df: pd.DataFrame):
+TRIGGER_BASELINE = 102
+
+
+def baseline_windows(events_df):
+    """The two D102-bracketed rest blocks, in samples.
+
+    D102 fires four times per recording: the pre-task pair brackets a fixed
+    ~60 s calm-breathing block that lies entirely before D101, and the post-task
+    pair brackets a second one starting a few seconds after D124. Returns
+
+        {"pre": (start, end), "post": (start, end) or None}
+
+    Pairs are formed structurally, not by position: the pre block is the first
+    consecutive D102 pair falling wholly before D101, the post block the first
+    pair wholly after D124. A recording that lost one of its D102 markers (so
+    that d102[0] and d102[1] straddle the task) yields None for that block
+    rather than a spurious window spanning the whole session.
+
+    `pre` is the reference block -- it precedes every picture, so nothing
+    task-related can leak into it. `post` follows the task and carries
+    carry-over arousal; it is for checking that the sensor's scale held across
+    the recording, not for use as a reference.
     """
-    Build per-trial epoch boundaries for one session from a loaded (not yet
-    cropped) MNE raw object and its full, unfiltered ratings DataFrame
-    (see load_all_trials_ratings).
+    merged = _merge_contiguous(events_df)
+    chans = [m["Channel"] for m in merged]
+    d102 = [m["Sample"] for m in merged if m["Channel"] == f"D{TRIGGER_BASELINE}"]
+    if len(d102) < 2:
+        raise TriggerAlignmentError(
+            f"D{TRIGGER_BASELINE} fired {len(d102)} time(s); the pre-task "
+            f"baseline block needs a bracketing pair.")
+
+    d101 = merged[chans.index("D101")]["Sample"] if "D101" in chans else None
+    d124 = merged[chans.index("D124")]["Sample"] if "D124" in chans else None
+    pairs = list(zip(d102[0::2], d102[1::2]))
+
+    pre = next((p for p in pairs if d101 is None or p[1] < d101), None)
+    post = next((p for p in pairs if d124 is not None and p[0] > d124), None)
+    if pre is None:
+        raise TriggerAlignmentError(
+            f"no D{TRIGGER_BASELINE} pair lies wholly before D101 "
+            f"(D102 at {d102}, D101 at {d101}) -- the pre-task baseline "
+            f"block is not recoverable for this recording.")
+    return {"pre": pre, "post": post}
+
+
+def build_trial_epochs(events_df, sfreq, ratings_df: pd.DataFrame):
+    """
+    Build per-trial epoch boundaries for one session from that session's
+    uncropped (Channel, Sample) event table and its full, unfiltered ratings
+    DataFrame (see load_all_trials_ratings).
 
     Returns a list of dicts, one per CSV row, in CSV row order:
       {
@@ -165,7 +207,6 @@ def build_trial_epochs(raw, ratings_df: pd.DataFrame):
             "ratings_df has no 'trigger_num' column -- cannot validate picture codes"
         )
 
-    events_df = emg.get_events_from_eeg(raw)
     merged = _merge_contiguous(events_df)
     channels = [m["Channel"] for m in merged]
 
@@ -186,8 +227,7 @@ def build_trial_epochs(raw, ratings_df: pd.DataFrame):
         )
 
     d105_idxs_in_window = [i for i, m in enumerate(window) if m["Channel"] == "D105"]
-    sfreq = float(raw.info["sfreq"])
-    d110_window_samps = int(round(D110_WINDOW_SEC * sfreq))
+    d110_window_samps = int(round(D110_WINDOW_SEC * float(sfreq)))
 
     # All D110 events in the task block, found ONCE up front. D110 is matched
     # to a trial by proximity to that trial's own code_sample (+/-2s), not by
