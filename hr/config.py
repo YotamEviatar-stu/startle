@@ -27,5 +27,5 @@ MANUAL_REST_SPANS = {
 
 MATLAB_BIN = "/Applications/MATLAB_R2026a.app/bin/matlab"
 FIELDTRIP_DIR = os.path.expanduser("~/Documents/MATLAB/fieldtrip")
-SASICA_DIR = os.path.expanduser("~/tools/SASICA")
-HEART_FUNCTIONS_DIR = os.path.expanduser("~/tools/heart_functions")
+SASICA_DIR = os.path.expanduser("~/code/tools/SASICA")
+HEART_FUNCTIONS_DIR = os.path.expanduser("~/code/tools/heart_functions")
