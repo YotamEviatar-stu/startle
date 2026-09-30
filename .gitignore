@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+.vscode/
+*.log
+*.asv
+hr/_out/
+hr/_out_overview/
+*.fif
+*.npz
+*.pkl
+*.mff/
+.claude/settings.local.json
+.claude/
