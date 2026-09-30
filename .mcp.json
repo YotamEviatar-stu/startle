@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "matlab": {
+      "type": "stdio",
+      "command": "/Users/yotameviatar/.local/bin/matlab-mcp-server",
+      "args": [
+        "--matlab-root=/Applications/MATLAB_R2026a.app",
+        "--initial-working-folder=/Users/yotameviatar/code/hr"
+      ],
+      "env": {}
+    }
+  }
+}
