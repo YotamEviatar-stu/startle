@@ -12,4 +12,3 @@ hr/_out_overview/
 *.pkl
 *.mff/
 .claude/settings.local.json
-.claude/

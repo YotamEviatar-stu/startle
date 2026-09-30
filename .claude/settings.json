@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(//Users/yotameviatar/airflow/**)",
+      "Read(//Users/yotameviatar/startle-1/**)",
+      "Read(//Users/yotameviatar/startle-1_removed_20260928/**)",
+      "Read(//Users/yotameviatar/airflow_output/**)",
+      "Edit(//Users/yotameviatar/airflow/**)",
+      "Edit(//Users/yotameviatar/startle-1/**)"
+    ]
+  }
+}
