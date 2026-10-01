@@ -1,6 +1,8 @@
 import os
 
 RAW_DATA_DIR = r"/Volumes/My Passport/startle_raw"
+DS_DATA_DIR = r"E:\startle_data"
+DS_FS = 250
 
 SESSIONS = ("eve", "mor")
 

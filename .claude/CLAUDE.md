@@ -43,6 +43,9 @@ Condition labels (session key `eve`/`mor`, sound code, picture/valence code) ent
 
 ## Data and experiment
 
+- Downsampled data (250 Hz): `E:\startle_data` on this Windows server (`hr/config.py`: `DS_DATA_DIR`, `DS_FS`). Use these files for processing on this machine. MG14/mor is missing (MFF conversion failed, see `downsample_log.csv`).
+- Python on the Windows server: `C:\Program Files\Python310\python.exe` (system Python 3.10, MNE 1.8.0). The `.venv` path below is for the Mac only.
+
 - Raw data: `/Volumes/My Passport/startle_raw` (external drive; must be mounted). Recordings are uniform-rate; don't add defensive handling for non-uniform rates.
 - `hr/config.py` — data paths, `MANUAL_REST_SPANS`, `SUBJECTS_EXCLUDE`. Hand-verified by the user; don't change spans or exclusions from automated checks.
 - `/hr-experiment` skill — experiment design, data layout, DIN triggers, rest-block timeline, known bad files. Invoke before touching data loading or trial/rest spans.
