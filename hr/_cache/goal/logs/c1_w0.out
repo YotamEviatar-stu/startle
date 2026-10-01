@@ -1,0 +1,115 @@
+AB22_eve__AB22_eve_20260108_103728: rank 256 ncomp 51 iter 500 460s
+AH19_eve__AH19_eve_20251203_110707: rank 256 ncomp 51 iter 124 405s
+AK12_eve__AK12_eve_2_20250901_125355: rank 256 ncomp 51 iter 124 286s
+AS09_eve__AS09_eve_20250806_120326: rank 256 ncomp 51 iter 500 286s
+AS31_eve__AS31_eve_20260618_110512: rank 256 ncomp 51 iter 83 273s
+DA01_eve__DA01_eve_20250605_113318: rank 256 ncomp 51 iter 105 423s
+EE10_eve__EE10_eve_20250813_112209: rank 256 ncomp 51 iter 123 358s
+ER23_eve__ER23_eve_20260129_123112: rank 256 ncomp 51 iter 79 710s
+ES29/eve ES29_eve_20260605_125423.mff FAILED
+Traceback (most recent call last):
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 85, in main
+    continue
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 56, in run_session
+    time.sleep(20)
+      ^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 35, in preprocess
+  File "<decorator-gen-383>", line 10, in read_raw_egi
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egi.py", line 181, in read_raw_egi
+    return _read_raw_egi_mff(
+           ^^^^^^^^^^^^^^^^^^
+  File "<decorator-gen-380>", line 10, in _read_raw_egi_mff
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 361, in _read_raw_egi_mff
+    return RawMff(
+           ^^^^^^^
+  File "<decorator-gen-381>", line 10, in __init__
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 404, in __init__
+    egi_info = _read_header(input_fname)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 220, in _read_header
+    mff_hdr = _read_mff_header(input_fname)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 56, in _read_mff_header
+    epochs = _get_ep_info(filepath)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/general.py", line 59, in _get_ep_info
+    epochlist = parse(epochfile)
+                ^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/defusedxml/minidom.py", line 22, in parse
+    return _expatbuilder.parse(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/defusedxml/expatbuilder.py", line 84, in parse
+    fp = open(file, "rb")
+         ^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/Volumes/My Passport/startle_raw/ES29/EEG/ES29_eve_20260605_125423.mff/epochs.xml'
+
+ES29_mor__ES29_mor_20260605_090020: rank 256 ncomp 51 iter 103 501s
+ES32_mor__ES32_mor_20260710_090533: rank 256 ncomp 51 iter 500 480s
+EV15_mor__EV15_mor_20251028_073958: rank 256 ncomp 51 iter 500 347s
+LB17_mor__LB17_mor_20251114_065909: rank 256 ncomp 51 iter 500 422s
+LG07_mor__LG07_mor_20250801_075524: rank 256 ncomp 51 iter 109 429s
+LO21_mor__LO21_mor_20251226_070731: rank 256 ncomp 51 iter 500 286s
+MG14/mor MG14_mor_20250928_075517.mff FAILED
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 1706, in feed
+    self.parser.Parse(data, False)
+xml.parsers.expat.ExpatError: junk after document element: line 78, column 6
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 85, in main
+    continue
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 56, in run_session
+    time.sleep(20)
+      ^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 35, in preprocess
+  File "<decorator-gen-383>", line 10, in read_raw_egi
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egi.py", line 181, in read_raw_egi
+    return _read_raw_egi_mff(
+           ^^^^^^^^^^^^^^^^^^
+  File "<decorator-gen-380>", line 10, in _read_raw_egi_mff
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 361, in _read_raw_egi_mff
+    return RawMff(
+           ^^^^^^^
+  File "<decorator-gen-381>", line 10, in __init__
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 411, in __init__
+    egi_events, egi_info, mff_events = _read_events(input_fname, egi_info)
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/events.py", line 26, in _read_events
+    mff_events, event_codes = _read_mff_events(input_fname, info["sfreq"])
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/events.py", line 51, in _read_mff_events
+    orig[xml_type] = _parse_xml(xml_file)
+                     ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/events.py", line 86, in _parse_xml
+    xml = defusedxml.ElementTree.parse(xml_file)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/defusedxml/common.py", line 100, in parse
+    return _parse(source, parser)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 1204, in parse
+    tree.parse(source, parser)
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 572, in parse
+    parser.feed(data)
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 1708, in feed
+    self._raiseerror(v)
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 1615, in _raiseerror
+    raise err
+xml.etree.ElementTree.ParseError: junk after document element: line 78, column 6
+
+MH20_mor__MH20_mor_20251219_074949: rank 256 ncomp 51 iter 88 375s
+ML28_mor__ML28_mor_20260508_074524: rank 256 ncomp 51 iter 102 473s
+Traceback (most recent call last):
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 94, in <module>
+    main(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), set(sys.argv[4:]) or None)
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 80, in main
+    sessions = list_sessions()
+               ^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/hr/caracas/run.py", line 23, in list_sessions
+    for subj_dir in sorted(Path(config.RAW_DATA_DIR).iterdir()):
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/pathlib.py", line 1056, in iterdir
+    for name in os.listdir(self):
+                ^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/Volumes/My Passport/startle_raw'

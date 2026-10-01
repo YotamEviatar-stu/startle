@@ -1,0 +1,65 @@
+AB22/eve AB22_eve_20260108_103728.mff FAILED
+Traceback (most recent call last):
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 95, in main
+    run_session(tag, subject, session, mff)
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 58, in run_session
+    raw = preprocess(mff, cfg)
+          ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 37, in preprocess
+    raw = mne.io.read_raw_egi(mff, preload=True, verbose="error")
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<decorator-gen-383>", line 10, in read_raw_egi
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egi.py", line 181, in read_raw_egi
+    return _read_raw_egi_mff(
+           ^^^^^^^^^^^^^^^^^^
+  File "<decorator-gen-380>", line 10, in _read_raw_egi_mff
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 361, in _read_raw_egi_mff
+    return RawMff(
+           ^^^^^^^
+  File "<decorator-gen-381>", line 10, in __init__
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 404, in __init__
+    egi_info = _read_header(input_fname)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 220, in _read_header
+    mff_hdr = _read_mff_header(input_fname)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 55, in _read_mff_header
+    signal_blocks = _get_blocks(fname)
+                    ^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/general.py", line 121, in _get_blocks
+    raise RuntimeError("There seems to be no data")
+RuntimeError: There seems to be no data
+
+AB22/mor AB22_mor_20260109_074252.mff FAILED
+Traceback (most recent call last):
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 95, in main
+    run_session(tag, subject, session, mff)
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 58, in run_session
+    raw = preprocess(mff, cfg)
+          ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 37, in preprocess
+    raw = mne.io.read_raw_egi(mff, preload=True, verbose="error")
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<decorator-gen-383>", line 10, in read_raw_egi
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egi.py", line 181, in read_raw_egi
+    return _read_raw_egi_mff(
+           ^^^^^^^^^^^^^^^^^^
+  File "<decorator-gen-380>", line 10, in _read_raw_egi_mff
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 361, in _read_raw_egi_mff
+    return RawMff(
+           ^^^^^^^
+  File "<decorator-gen-381>", line 10, in __init__
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 404, in __init__
+    egi_info = _read_header(input_fname)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 220, in _read_header
+    mff_hdr = _read_mff_header(input_fname)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 55, in _read_mff_header
+    signal_blocks = _get_blocks(fname)
+                    ^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/general.py", line 121, in _get_blocks
+    raise RuntimeError("There seems to be no data")
+RuntimeError: There seems to be no data
+
+MS18_eve__MS18_eve_20251120_103853: rank 256 ncomp 256 iter 135 1898s

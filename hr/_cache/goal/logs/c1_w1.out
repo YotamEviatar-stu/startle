@@ -1,0 +1,28 @@
+AB22_mor__AB22_mor_20260109_074252: rank 256 ncomp 51 iter 161 470s
+AG05_mor__AG05_mor_20250714_071646: rank 256 ncomp 51 iter 160 291s
+AH19_mor__AH19_mor_20251204_080201: rank 256 ncomp 51 iter 500 224s
+AK12_mor__AK12_mor_20250901_072137: rank 256 ncomp 51 iter 500 272s
+AS09_mor__AS09_mor_20250806_080059: rank 256 ncomp 51 iter 178 338s
+AS31_mor__AS31_mor_20260619_081927: rank 256 ncomp 51 iter 83 231s
+DA01_mor__DA01_mor_20250606_084506: rank 256 ncomp 51 iter 134 473s
+EE10_mor__EE10_mor_20250814_064428: rank 256 ncomp 51 iter 500 460s
+ER23_mor__ER23_mor_20260129_083145: rank 256 ncomp 51 iter 500 476s
+ES29_eve__ES29_eve_2_20260605_010726: rank 256 ncomp 51 iter 500 359s
+ES32_eve__ES32_eve_20260709_111515: rank 256 ncomp 51 iter 96 446s
+EV15_eve__EV15_eve_20251027_111902: rank 256 ncomp 51 iter 184 424s
+LB17_eve__LB17_eve_20251113_105027: rank 256 ncomp 51 iter 176 810s
+LG07_eve__LG07_eve_20250731_113024: rank 256 ncomp 51 iter 146 359s
+LO21_eve__LO21_eve_20251225_112612: rank 256 ncomp 51 iter 500 724s
+Traceback (most recent call last):
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 94, in <module>
+    main(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), set(sys.argv[4:]) or None)
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 80, in main
+    sessions = list_sessions()
+               ^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/hr/caracas/run.py", line 23, in list_sessions
+    for subj_dir in sorted(Path(config.RAW_DATA_DIR).iterdir()):
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/pathlib.py", line 1056, in iterdir
+    for name in os.listdir(self):
+                ^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/Volumes/My Passport/startle_raw'

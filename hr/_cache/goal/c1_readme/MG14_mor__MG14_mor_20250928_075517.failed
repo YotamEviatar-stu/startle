@@ -1,0 +1,47 @@
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 1706, in feed
+    self.parser.Parse(data, False)
+xml.parsers.expat.ExpatError: junk after document element: line 78, column 6
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 85, in main
+    continue
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 56, in run_session
+    time.sleep(20)
+      ^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 35, in preprocess
+  File "<decorator-gen-383>", line 10, in read_raw_egi
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egi.py", line 181, in read_raw_egi
+    return _read_raw_egi_mff(
+           ^^^^^^^^^^^^^^^^^^
+  File "<decorator-gen-380>", line 10, in _read_raw_egi_mff
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 361, in _read_raw_egi_mff
+    return RawMff(
+           ^^^^^^^
+  File "<decorator-gen-381>", line 10, in __init__
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 411, in __init__
+    egi_events, egi_info, mff_events = _read_events(input_fname, egi_info)
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/events.py", line 26, in _read_events
+    mff_events, event_codes = _read_mff_events(input_fname, info["sfreq"])
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/events.py", line 51, in _read_mff_events
+    orig[xml_type] = _parse_xml(xml_file)
+                     ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/events.py", line 86, in _parse_xml
+    xml = defusedxml.ElementTree.parse(xml_file)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/defusedxml/common.py", line 100, in parse
+    return _parse(source, parser)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 1204, in parse
+    tree.parse(source, parser)
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 572, in parse
+    parser.feed(data)
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 1708, in feed
+    self._raiseerror(v)
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/xml/etree/ElementTree.py", line 1615, in _raiseerror
+    raise err
+xml.etree.ElementTree.ParseError: junk after document element: line 78, column 6

@@ -1,0 +1,3 @@
+session,mff,cardiac_ics,caracas_pass,rest_pre_beats,rest_pre_median_bpm,task_beats,task_median_bpm,rest_post_beats,rest_post_median_bpm,bpm_iqr_full
+AB22/eve,AB22_eve_20260108_103728.mff,,False,,,,,,,
+AG05/eve,AG05_eve_20250714_120919.mff,32,True,54.0,63.62672322375316,829.0,90.29350484644908,44.0,63.291139240507725,61.11376490907653

@@ -1,0 +1,35 @@
+Traceback (most recent call last):
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 85, in main
+    continue
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 56, in run_session
+    time.sleep(20)
+      ^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/hr/caracas/goal_ica.py", line 35, in preprocess
+  File "<decorator-gen-383>", line 10, in read_raw_egi
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egi.py", line 181, in read_raw_egi
+    return _read_raw_egi_mff(
+           ^^^^^^^^^^^^^^^^^^
+  File "<decorator-gen-380>", line 10, in _read_raw_egi_mff
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 361, in _read_raw_egi_mff
+    return RawMff(
+           ^^^^^^^
+  File "<decorator-gen-381>", line 10, in __init__
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 404, in __init__
+    egi_info = _read_header(input_fname)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 220, in _read_header
+    mff_hdr = _read_mff_header(input_fname)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/egimff.py", line 56, in _read_mff_header
+    epochs = _get_ep_info(filepath)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/mne/io/egi/general.py", line 59, in _get_ep_info
+    epochlist = parse(epochfile)
+                ^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/defusedxml/minidom.py", line 22, in parse
+    return _expatbuilder.parse(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yotameviatar/code/hr/.venv/lib/python3.12/site-packages/defusedxml/expatbuilder.py", line 84, in parse
+    fp = open(file, "rb")
+         ^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/Volumes/My Passport/startle_raw/ES29/EEG/ES29_eve_20260605_125423.mff/epochs.xml'
