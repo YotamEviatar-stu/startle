@@ -1,0 +1,23 @@
+{
+  "skill_name": "cardiac-ica",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "session S12/mor came back from caracas_session with no cardiac IC. meas for IC 4 (the one that looks like ECG when I plot it): sk 1.4, ku 6.1, RR 0.45, Rampl 0.19, bpm 118. what's going on and what should I do?",
+      "expected_output": "Identifies that IC 4 fails RR (>0.31) and bpm (>97) while passing sk/ku/Rampl; bpm ~2x a plausible resting HR suggests T-waves/extra peaks counted at corthresh 0.2; recommends checking detected beats on IC 4 and treating as a decomposition/detection question to propose to the user, not loosening thresholds.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I have a FieldTrip comp struct from ft_componentanalysis on data I downsampled to 125 Hz. Write me the MATLAB to run CARACAS on it via ft_SASICA and get the cardiac IC indices.",
+      "expected_output": "Flags ft_SASICA argument-order bug (line 70), the 100 Hz low-pass > Nyquist error at 125 Hz (set cfg.CARACAS.cfg_peak.lpfreq or keep fs > 200), need for zscore shim and channel locations, noplot options; builds EEG struct manually and calls eeg_SASICA; reads icarejCARACAS.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Which CARACAS thresholds are we actually using, and are they the newest ones? Our CLAUDE.md says stage 1 is built on CARACAS/CARACAS.m.",
+      "expected_output": "Explains three CARACAS versions; current maintained one is eeg_SASICA block with sk 1.0 / ku 5.3 / RR 0.31 / Rampl 0.23 / bpm [34 97] from 2026-05-21; CARACAS/CARACAS.m is a legacy snapshot with different rules; local clones up to date (or runs check_upstream.sh); flags the CLAUDE.md discrepancy for the user to decide.",
+      "files": []
+    }
+  ]
+}
