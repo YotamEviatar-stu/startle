@@ -1,8 +1,10 @@
 # CARACAS versions, repos and dates
 
-Re-verify with `scripts/check_upstream.sh` — this table was captured 2026-09-30.
+Re-verify with `scripts/check_upstream.sh` — this table was captured 2026-09-30 on the previous Mac setup.
 
-## Repos on disk
+**This machine (2026-10-01):** only `D:\user\Desktop\startle-repo\SASICA\` (`9ab76d7`, = `SASICA_DIR`) and `Cardiac_IC_labelling\` exist; `SASICA\CARACAS\heart_functions` is empty and there is no `~/code/tools/`. The `~/code/tools/...` rows below don't exist here.
+
+## Repos on disk (Mac, 2026-09-30)
 
 | Clone | Remote | HEAD (date) | Newest upstream | Behind |
 |---|---|---|---|---|

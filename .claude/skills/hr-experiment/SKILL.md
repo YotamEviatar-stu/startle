@@ -1,6 +1,6 @@
 ---
 name: hr-experiment
-description: Startle-experiment briefing for the HR repo — design, raw data layout, CSV columns, DIN trigger scheme, rest-block timeline, known bad files and subject quirks. Invoke before touching MFF loading, trial epochs, or rest/task spans for heart-rate work.
+description: Startle-experiment briefing for the HR repo — design, data layout (C:\startle_data 250 Hz FIFs), CSV columns, DIN trigger scheme, rest-block timeline, known bad files and subject quirks. Invoke before touching MFF loading, trial epochs, or rest/task spans for heart-rate work.
 ---
 
 # Startle experiment — what the HR pipeline needs to know
@@ -11,15 +11,21 @@ Overnight sleep study. Each subject has two sessions: **Evening** (`eve`, CSV `_
 
 Session, image type and `has_sound` are **reporting metadata only**. The pipeline must never read them.
 
-## Raw data layout
+## Data layout
+
+All data lives in `C:\startle_data` (`config.DATA_250_DIR`) — the only permanent storage:
 
 ```
-/Volumes/My Passport/startle_raw/
-  <SubjectID>/
-    EEG/*_eve_*.mff, *_mor_*.mff    (ignore *_SLEEP_*.mff)
-    startle output/*_1.csv, *_2.csv
-  subjects.xlsx                     ID, STAI-T
+C:\startle_data\
+  <SubjectID>\
+    <SubjectID>_eve_raw.fif, <SubjectID>_mor_raw.fif   250 Hz, built by hr/downsample.py
+    startle output\*_1.csv, *_2.csv                   (+ .log, .psydat, *_demo = practice)
+  downsample_log.csv                                  source MFF / failure per session
 ```
+
+FIF contents: 257 EEG (`E1`–`E256`, `VREF`), `SpO2-Pulse`, all DIN stim channels. Exact trigger onsets (taken from the 1000 Hz MFF) are stored as **annotations** named by channel (`D102`, `D105`, …) — use those; the resampled stim channels can shift by a few ms. Not kept: `ECG` (mains noise in AB22 eve, not a real lead there), `Pleth`, EMG, other bio channels.
+
+The raw MFFs were at `F:\startle_raw\<SubjectID>\EEG\*.mff` (`config.RAW_DATA_DIR`). That drive is temporary and will be removed — nothing may depend on it. `subjects.xlsx` (ID, STAI-T) was not found there.
 
 CSV columns: `has_sound` (bool), `arousalRating`, `valenceRating`, `image_type` ("negative"/"neutral"), `trigger_num`, image name.
 
@@ -50,7 +56,7 @@ Trial cycle: `D105 → D{code} → D110 (sound only) → next D105`. Match trigg
 | dead time | D124 → D102[2] | ~3 s, not rest |
 | rest post | D102[2] → D102[3] | 60.21 s |
 
-A fixed offset before the first D105 is **not** rest; it falls in the setup gap. Where the D102 pairs are missing or bad, `hr/config.py:MANUAL_REST_SPANS` holds hand-verified replacements (seconds; `None` = unusable).
+A fixed offset before the first D105 is **not** rest; it falls in the setup gap. Rest spans come only from the D102 markers and this timeline — there are no manual span overrides. How to handle sessions with missing or bad D102 pairs is a user decision at the alignment stage.
 
 ## Known data issues
 
@@ -61,8 +67,12 @@ A fixed offset before the first D105 is **not** rest; it falls in the setup gap.
 | ML28 eve | macOS `._` file picked up instead of the MFF |
 | LO21 | folder contains MH20's MFF files |
 | RP06 / SH25 | files named `RP6_*` / `ST25_*`; resolve by folder, not filename (`config.SUBJECT_ID`) |
+| DA01 eve | raw file named `DA01_task_*`; user confirmed it is eve (`config.SESSION_FILE_ALIASES`) |
+| AK12 | flat raw folder (no `EEG\` or `startle output\`), eve file named `AK12_eve2_*`; CSV files have `(2)`/`(3)` duplicates and an `A12_*` mor file (`config.SESSION_FILE_ALIASES`) |
+| OA02 mor | raw file named `OA_mor_*` |
+| EL04 eve + mor | recorded at 250 Hz natively (no resampling) |
 
-These are data issues: skip them with try/except, don't hard-code around them.
+These are data issues: skip them with try/except, don't hard-code around them — except the aliases the user confirmed in `config.SESSION_FILE_ALIASES`.
 
 ## Colors
 

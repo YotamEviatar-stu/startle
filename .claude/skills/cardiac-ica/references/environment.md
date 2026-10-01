@@ -1,11 +1,24 @@
-# Running environment (this machine, verified 2026-09-30)
+# Running environment
 
-## Software
+## This machine — Windows 11, repo at `D:\user\Desktop\startle-repo` (verified 2026-10-01)
 
-- MATLAB **R2026a** Update 4 at `/Applications/MATLAB_R2026a.app` (`MATLAB_BIN` in `hr/config.py`). Installed toolboxes: Signal Processing, Simulink, MATLAB MCP Server. **No Statistics and Machine Learning Toolbox.**
-- FieldTrip at `~/Documents/MATLAB/fieldtrip` (`FIELDTRIP_DIR`), git `4c553bda8` (2026-07-23).
-- SASICA at `~/code/tools/SASICA` (`SASICA_DIR`), master `9ab76d7`, with its bundled minimal EEGLAB in `SASICA/eeglab` (adminfunc, popfunc, sigprocfunc…, plugins `firfilt`, `ICLabel`).
-- heart_functions: submodule `~/code/tools/SASICA/CARACAS/heart_functions` (the one `eeg_SASICA` adds to the path) and standalone `~/code/tools/heart_functions` (`HEART_FUNCTIONS_DIR`). Same `heart_peak_detect.m`.
+- Python: repo venv `D:\user\Desktop\startle-repo\.venv\Scripts\python.exe`, MNE 1.8.0. Shells: PowerShell and Git Bash.
+- Data: `C:\startle_data` (250 Hz FIFs, see `/hr-experiment`). 12 cores, 64 GB RAM.
+- **No full MATLAB.** Only `C:\Program Files\MATLAB\MATLAB Runtime\v95` (runs compiled apps; cannot run `.m` files). `MATLAB_BIN`, `FIELDTRIP_DIR`, `HEART_FUNCTIONS_DIR` in `hr/config.py` and `.mcp.json` still hold the Mac paths below and don't exist here; the `matlab` MCP server fails to connect.
+- **No FieldTrip** found.
+- SASICA: repo clone `SASICA\` (`SASICA_DIR`, repo-relative), master `9ab76d7`, with bundled minimal EEGLAB.
+- heart_functions: `SASICA\CARACAS\heart_functions` submodule is **empty** (not initialized); no standalone clone.
+- Shims: `hr\matlab\{prctile,zscore,rep2struct}.m`; `hr\_cache\deps\{zscore,rep2struct}.m`.
+- So SASICA/CARACAS cannot run here as is: it needs MATLAB, FieldTrip and heart_functions installed first — ask the user.
+
+Everything below was verified on the previous Mac setup (2026-09-30) and describes MATLAB behaviour, not this machine's paths.
+
+## Previous Mac setup (2026-09-30)
+
+- MATLAB **R2026a** Update 4 at `/Applications/MATLAB_R2026a.app`. Installed toolboxes: Signal Processing, Simulink, MATLAB MCP Server. **No Statistics and Machine Learning Toolbox.**
+- FieldTrip at `~/Documents/MATLAB/fieldtrip`, git `4c553bda8` (2026-07-23).
+- SASICA at `~/code/tools/SASICA`, master `9ab76d7`, with its bundled minimal EEGLAB in `SASICA/eeglab` (adminfunc, popfunc, sigprocfunc…, plugins `firfilt`, `ICLabel`).
+- heart_functions: submodule `~/code/tools/SASICA/CARACAS/heart_functions` (the one `eeg_SASICA` adds to the path) and standalone `~/code/tools/heart_functions`. Same `heart_peak_detect.m`.
 - Shims: `~/code/tools/matlab_shim/{prctile,zscore,rep2struct}.m`; copies in `hr/matlab/`. `hr/caracas/caracas_session.m` instead copies `SASICA/private/zscore.m` into `hr/_cache/deps/` and adds that.
 
 ## Function resolution (after `restoredefaultpath; ft_defaults; addpath SASICA, CARACAS, heart_functions, SASICA/eeglab/functions`)

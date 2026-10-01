@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Project guidance for the **HR** repo: heart rate / HRV in the startle experiment, from an ECG-like signal recovered from the EEG. General communication style, global skills and memory conventions live in `~/.claude/CLAUDE.md` and apply here unchanged.
+Project guidance for the **HR** repo: heart rate / HRV in the startle experiment, from an ECG-like signal recovered from the EEG. General communication style, global skills and memory conventions live in `~/.claude/CLAUDE.md` and apply here unchanged (that file doesn't exist on this Windows machine yet).
 
 ## What we are building
 
@@ -43,11 +43,14 @@ Condition labels (session key `eve`/`mor`, sound code, picture/valence code) ent
 
 ## Data and experiment
 
-- Raw data: `/Volumes/My Passport/startle_raw` (external drive; must be mounted). Recordings are uniform-rate; don't add defensive handling for non-uniform rates.
-- `hr/config.py` — data paths, `MANUAL_REST_SPANS`, `SUBJECTS_EXCLUDE`. Hand-verified by the user; don't change spans or exclusions from automated checks.
+- **All data lives in `C:\startle_data`** — the only storage. `F:\startle_raw` (raw MFFs) is temporary and will be removed; nothing may depend on it. Recordings are uniform-rate; don't add defensive handling for non-uniform rates.
+- 250 Hz data: `C:\startle_data\<SUBJ>\<SUBJ>_<eve|mor>_raw.fif` — all eve/mor sessions, built by `hr/downsample.py` (no ICA or other processing). Channels: 257 EEG, `SpO2-Pulse`, DIN stim channels; exact trigger times are in the annotations (from the 1000 Hz data). DA01 eve comes from its `task` file, AK12 eve from `eve2` (`config.SESSION_FILE_ALIASES`). Per-session source file and failures: `C:\startle_data\downsample_log.csv`. Work from these files, not the raw MFFs.
+- Behavioral files: `C:\startle_data\<SUBJ>\startle output\` (CSV `_1` = eve, `_2` = mor, plus `.log`/`.psydat`), copied from F. `subjects.xlsx` (STAI-T) was not on F — ask the user if it's needed.
+- Machine: Windows 11, repo at `D:\user\Desktop\startle-repo`. No full MATLAB (only MATLAB Runtime v95), no FieldTrip, empty `SASICA\CARACAS\heart_functions` submodule — SASICA/CARACAS can't run until these are installed. `hr/config.py` MATLAB/FieldTrip/heart_functions paths and `.mcp.json` still point at the old Mac. Details: `/cardiac-ica` → `references/environment.md`.
+- `hr/config.py` — data paths, session file aliases, `SUBJECTS_EXCLUDE`. HR-only: no breathing/airflow settings and no manual span edits — rest pre/post come from the D102 markers and the `/hr-experiment` timeline (≈60.22 s each). Don't change exclusions from automated checks.
 - `/hr-experiment` skill — experiment design, data layout, DIN triggers, rest-block timeline, known bad files. Invoke before touching data loading or trial/rest spans.
 - Cache only derived/downsampled data, never full-rate traces.
-- Run with the repo venv by absolute path: `/Users/yotameviatar/code/hr/.venv/bin/python` (from the repo root).
+- Run with the repo venv by absolute path: `D:\user\Desktop\startle-repo\.venv\Scripts\python.exe` (from the repo root).
 
 ## Plotting
 
