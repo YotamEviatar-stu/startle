@@ -43,14 +43,13 @@ Condition labels (session key `eve`/`mor`, sound code, picture/valence code) ent
 
 ## Data and experiment
 
-- Downsampled data (250 Hz): `E:\startle_data` on this Windows server (`hr/config.py`: `DS_DATA_DIR`, `DS_FS`). Use these files for processing on this machine. MG14/mor is missing (MFF conversion failed, see `downsample_log.csv`).
-- Python on the Windows server: `C:\Program Files\Python310\python.exe` (system Python 3.10, MNE 1.8.0). The `.venv` path below is for the Mac only.
-
-- Raw data: `/Volumes/My Passport/startle_raw` (external drive; must be mounted). Recordings are uniform-rate; don't add defensive handling for non-uniform rates.
+- All work runs on one Windows server (accessed via VS Code Remote-SSH from every location); there is no other machine.
+- Data: 250 Hz downsampled recordings at `E:\startle_data` (`hr/config.py`: `DS_DATA_DIR`, `DS_FS`), one folder per subject with `<SUBJ>_<eve|mor>_raw.fif` and the PsychoPy files in `startle output/`. MG14/mor is missing (MFF conversion failed, see `downsample_log.csv`). Full-rate MFF data is not on the server (`RAW_DATA_DIR = None`). Recordings are uniform-rate; don't add defensive handling for non-uniform rates.
+- Toolboxes: MATLAB R2024b (`MATLAB_BIN`); SASICA and Cardiac_IC_labelling are git submodules in the repo; heart_functions is at `SASICA/CARACAS/heart_functions`. FieldTrip is not installed (`FIELDTRIP_DIR = None`).
 - `hr/config.py` — data paths, `MANUAL_REST_SPANS`, `SUBJECTS_EXCLUDE`. Hand-verified by the user; don't change spans or exclusions from automated checks.
 - `/hr-experiment` skill — experiment design, data layout, DIN triggers, rest-block timeline, known bad files. Invoke before touching data loading or trial/rest spans.
 - Cache only derived/downsampled data, never full-rate traces.
-- Run with the repo venv by absolute path: `/Users/yotameviatar/code/hr/.venv/bin/python` (from the repo root).
+- Run with `C:\Program Files\Python310\python.exe` (system Python 3.10, MNE 1.8.0) from the repo root.
 
 ## Plotting
 

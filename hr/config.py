@@ -1,6 +1,8 @@
 import os
 
-RAW_DATA_DIR = r"/Volumes/My Passport/startle_raw"
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+RAW_DATA_DIR = None
 DS_DATA_DIR = r"E:\startle_data"
 DS_FS = 250
 
@@ -27,7 +29,7 @@ MANUAL_REST_SPANS = {
     "YL26/eve": {"pre": (340.731, 420.0), "post": (1087.311, 1137.0)},
 }
 
-MATLAB_BIN = "/Applications/MATLAB_R2026a.app/bin/matlab"
-FIELDTRIP_DIR = os.path.expanduser("~/Documents/MATLAB/fieldtrip")
-SASICA_DIR = os.path.expanduser("~/code/tools/SASICA")
-HEART_FUNCTIONS_DIR = os.path.expanduser("~/code/tools/heart_functions")
+MATLAB_BIN = r"C:\Program Files\MATLAB\R2024b\bin\matlab.exe"
+FIELDTRIP_DIR = None
+SASICA_DIR = os.path.join(REPO_DIR, "SASICA")
+HEART_FUNCTIONS_DIR = os.path.join(SASICA_DIR, "CARACAS", "heart_functions")
