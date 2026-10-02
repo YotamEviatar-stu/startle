@@ -1,0 +1,58 @@
+session,status,ncomp,n_iter,iclabel,iclabel_ics,iclabel_best_ic,iclabel_best_p,caracas,caracas_ics,caracas_bpm,caracas_sk,caracas_RR,caracas_p_heart,same_ic
+AB22_eve,ok,51,500,no,,41,0.097,no,,,,,,False
+AB22_mor,ok,51,500,yes,24 31 45 48,24,0.64,no,,,,,,False
+AG05_eve,ok,51,103,no,,40,0.036,no,,,,,,False
+AG05_mor,ok,51,500,no,,50,0.14,no,,,,,,False
+AH19_eve,ok,51,123,no,,30,0.074,no,,,,,,False
+AH19_mor,ok,51,126,no,,39,0.17,no,,,,,,False
+AK12_eve,ok,51,93,yes,8,8,0.33,yes,19,68.4,2.19,0.056,0.15,False
+AK12_mor,ok,51,500,no,,20,0.093,no,,,,,,False
+AS09_eve,ok,51,83,no,,32,0.106,no,,,,,,False
+AS09_mor,ok,51,119,no,,33,0.108,no,,,,,,False
+AS31_eve,ok,51,116,yes,28,28,0.46,no,,,,,,False
+AS31_mor,ok,51,119,no,,50,0.113,no,,,,,,False
+DA01_eve,ok,51,99,yes,41 48,41,0.413,no,,,,,,False
+DA01_mor,ok,51,191,yes,12 13 28 33 37 38,38,0.734,no,,,,,,False
+EE10_eve,ok,51,97,no,,41,0.055,yes,41,81.7,3.40,0.054,0.05,False
+EE10_mor,ok,51,500,no,,21,0.045,yes,21,67.5,2.63,0.064,0.04,False
+EL04_eve,ok,51,98,no,,44,0.065,no,,,,,,False
+EL04_mor,ok,51,500,no,,33,0.162,no,,,,,,False
+ER23_eve,ok,51,79,no,,10,0.151,no,,,,,,False
+ER23_mor,ok,51,500,no,,38,0.029,no,,,,,,False
+ES29_eve,ok,51,107,no,,24,0.297,no,,,,,,False
+ES29_mor,ok,51,92,no,,50,0.029,no,,,,,,False
+ES32_eve,ok,51,150,no,,32,0.093,no,,,,,,False
+ES32_mor,ok,51,500,no,,37,0.019,no,,,,,,False
+EV15_eve,ok,51,109,no,,21,0.201,no,,,,,,False
+EV15_mor,ok,51,232,no,,27,0.201,no,,,,,,False
+LB17_eve,ok,51,131,no,,50,0.043,no,,,,,,False
+LB17_mor,ok,51,500,no,,49,0.341,no,,,,,,False
+LG07_eve,ok,51,102,yes,6,6,0.757,yes,6,71.9,2.65,0.076,0.76,True
+LG07_mor,ok,51,99,no,,33,0.004,no,,,,,,False
+LO21_eve,ok,51,500,no,,39,0.195,no,,,,,,False
+LO21_mor,ok,51,500,no,,9,0.13,no,,,,,,False
+MG14_eve,ok,51,500,yes,34 35,35,0.609,no,,,,,,False
+MH20_eve,ok,51,114,yes,33,33,0.626,no,,,,,,False
+MH20_mor,ok,51,102,no,,41,0.198,no,,,,,,False
+ML28_eve,ok,51,69,no,,50,0.264,no,,,,,,False
+ML28_mor,ok,51,500,yes,36,36,0.85,no,,,,,,False
+MS13_eve,ok,51,166,yes,32 43,43,0.431,no,,,,,,False
+MS13_mor,ok,51,500,no,,37,0.275,no,,,,,,False
+MS18_eve,ok,51,90,no,,46,0.285,no,,,,,,False
+MS18_mor,ok,51,92,no,,50,0.147,no,,,,,,False
+NB03_eve,ok,51,110,yes,47,47,0.527,no,,,,,,False
+NB03_mor,ok,51,500,no,,39,0.022,no,,,,,,False
+OA02_eve,ok,51,105,no,,26,0.284,no,,,,,,False
+OA02_mor,ok,51,154,no,,32,0.078,no,,,,,,False
+OA30_eve,ok,51,132,no,,22,0.061,no,,,,,,False
+OA30_mor,ok,51,500,no,,48,0.262,no,,,,,,False
+OM16_eve,ok,51,104,no,,42,0.298,no,,,,,,False
+OM16_mor,ok,51,500,yes,44,44,0.438,no,,,,,,False
+RP06_eve,ok,51,105,no,,45,0.032,yes,32 42,59.1 72.5,2.90 2.41,0.138 0.201,0.00 0.00,False
+RP06_mor,ok,51,176,no,,37,0.03,yes,47,51.1,2.30,0.228,0.01,False
+ST25_eve,ok,51,65,no,,22,0.02,no,,,,,,False
+ST25_mor,ok,51,89,no,,45,0.154,no,,,,,,False
+YL26_eve,ok,51,500,yes,11,11,0.435,no,,,,,,False
+YL26_mor,ok,51,500,yes,21 46 48,48,0.645,no,,,,,,False
+YR08_eve,ok,51,500,no,,9,0.027,no,,,,,,False
+YR08_mor,ok,51,197,no,,31,0.102,no,,,,,,False
