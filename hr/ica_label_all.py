@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hr import config as cfg
 from hr.caracas_py import caracas
 
-DATA = Path(cfg.DATA_250_DIR)
+DATA = Path(cfg.DS_DATA_DIR)
 CACHE = Path(__file__).resolve().parent / "_cache" / "ica_all"
 CLASSES = ("brain", "muscle artifact", "eye blink", "heart beat", "line noise", "channel noise", "other")
 SEED = 97
