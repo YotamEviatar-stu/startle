@@ -1,0 +1,6 @@
+[submodule "SASICA"]
+	path = SASICA
+	url = https://github.com/dnacombo/SASICA.git
+[submodule "Cardiac_IC_labelling"]
+	path = Cardiac_IC_labelling
+	url = https://github.com/PierreChampetier/Cardiac_IC_labelling.git
